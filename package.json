@@ -310,7 +310,7 @@
   "electron-is-dev": "^3.0.1",
  
    
-  "eslint": "^9.32.0",
+  "eslint": "^9.39.4",
  
    
   "eslint-plugin-react-hooks": "^5.2.0",
@@ -326,6 +326,9 @@
  
    
   "postcss": "^8.5.6",
+ 
+   
+  "prettier": "^3.8.1",
  
    
   "tailwindcss": "^3.4.17",

@@ -31,6 +31,8 @@ import Trash from "@/pages/Trash";
 import NotFound from "@/pages/NotFound";
 
 import CurrencyConverter from '@/components/CurrencyConverter';
+import Index from "./pages/Index";
+import { LogIn } from "lucide-react";
 
 // Add this route:
 <Route path="/converter" element={<CurrencyConverter />} />
@@ -43,12 +45,15 @@ function AppCore() {
   if (loading) return (
     <div className="min-h-screen bg-background flex items-center justify-center">
       <div className="text-center space-y-3">
+        <div className="loader">Loading...</div>
         <div className="w-10 h-10 border-2 border-primary border-t-transparent rounded-full animate-spin mx-auto" />
         <p className="text-sm text-muted-foreground">Loading Smart Wallet...</p>
       </div>
     </div>
   );
-  if (!currentUser) return <Login />;
+  if (!currentUser) {
+  return <Login />;
+}
   return (
     <DatabaseProvider userId={currentUser.id}>
       <TooltipProvider>
@@ -78,7 +83,9 @@ function AppCore() {
               <Route path="/money-lenders" element={<MoneyLenders />} />
               <Route path="/rules" element={<Rules />} />
               <Route path="/trash" element={<Trash />} />
-              <Route path="/converter" element={<CurrencyConverter />} />
+              
+              <Route path="/converter" element={<CurrencyConverter />}
+               />
             </Route>
             <Route path="*" element={<NotFound />} />
           </Routes>
