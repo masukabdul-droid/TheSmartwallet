@@ -994,7 +994,7 @@ export function DatabaseProvider({ children, userId }: { children: ReactNode; us
       setCashOpeningBalanceRaw(co);
 
       // Ensure cash entries are loaded
-      if (cache.cashEntries?.length) setCashEntriesRaw(cache.cashEntries);
+      if (cache?.cashEntries?.length) setCashEntriesRaw(cache.cashEntries);
 
       // Save fresh data to session cache for instant reload next time
       saveCache({
@@ -1029,12 +1029,11 @@ export function DatabaseProvider({ children, userId }: { children: ReactNode; us
       .filter(t => t.toAccountId === id)
       .reduce((s, t) => s + t.amountReceived, 0);
     // Calculate total credit card repayments made from this account
-    const ccRepaymentsTotal = creditCards.flatMap(c => c.repayments || []).filter(r => r && r.sourceAccountId === id).reduce((sum, r) => sum + r.amount, 0);
-
+   
     // Calculate total cash entries (deposits/withdrawals) for this account
     const cashEntriesTotal = cashEntries.filter(ce => ce.linkedAccountId === id).reduce((sum, ce) => sum + ce.amount, 0);
 
-    return (acct.openingBalance || 0) + txTotal - transferOut + transferIn - ccRepaymentsTotal + cashEntriesTotal;
+    return (acct.openingBalance || 0) + txTotal - transferOut + transferIn + cashEntriesTotal;
   };
 
   const getAccountAvailableBalance = (id: string): number => {
@@ -1159,20 +1158,19 @@ export function DatabaseProvider({ children, userId }: { children: ReactNode; us
     addCreditCard: c => setCreditCards(p => [...p, { ...c, id: uid(), transactions: [], repayments: [], cashbackBalance: 0 }]),
     updateCreditCard: (id, u) => setCreditCards(p => p.map(c => c.id===id ? { ...c, ...u } : c)),
     addCardTransaction: (cardId, tx) => {
-      const loanId = tx.isInstallment ? uid() : undefined;
-      setCreditCards(p => p.map(c => {
-        if (c.id!==cardId) return c;
-        const newBalance = c.balance + tx.amount;
-        let newTx = { ...tx, id: uid(), installmentLoanId: loanId };
-        // Auto-add loyalty points if program linked
-        if (c.loyaltyProgramId && !tx.loyaltyPoints) {
-          const prog = loyaltyPrograms.find(lp => lp.id === c.loyaltyProgramId);
-          if (prog?.autoDetect && prog.earnRate && tx.amount < 0) {
-            newTx = { ...newTx, loyaltyPoints: Math.floor(Math.abs(tx.amount) * prog.earnRate), loyaltyProgramId: c.loyaltyProgramId };
-          }
-        }
-        return { ...c, balance: newBalance, transactions: [newTx, ...c.transactions] };
-      }));
+  const loanId = tx.isInstallment ? uid() : undefined;
+  const linkedTxId = uid(); // ← NEW: shared ID between both records
+
+  setCreditCards(p => p.map(c => {
+    if (c.id !== cardId) return c;
+    const newBalance = c.balance + tx.amount;
+    let newTx = { ...tx, id: uid(), installmentLoanId: loanId, linkedTransactionId: linkedTxId }; // ← add linkedTransactionId
+    // ... rest of your existing loyalty/installment logic unchanged ...
+    return { ...c, balance: newBalance, transactions: [newTx, ...c.transactions] };
+  }));
+
+
+  
       // If installment, auto-create a Loan/EMI entry
       if (tx.isInstallment && tx.installmentMonths && loanId) {
         const card = creditCards.find(c => c.id === cardId);

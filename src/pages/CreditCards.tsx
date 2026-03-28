@@ -10,6 +10,8 @@ import { CreditCard, Plus, Trash2, Edit2, Sparkles, Gift, ArrowDownToLine, Star,
 import { useDB, CreditCard as CCType, CardCashbackRule, CardRepayment, CardTransaction } from "@/lib/database";
 import { SearchFilter, EMPTY_FILTER, matchesFilter, SearchFilterState } from "@/components/ui/search-filter";
 
+// #MAMOON
+
 const CARD_COLORS = ["from-amber-500 to-orange-600","from-violet-500 to-purple-700","from-slate-600 to-slate-800","from-emerald-500 to-teal-600","from-rose-500 to-pink-600","from-blue-500 to-indigo-600","from-yellow-400 to-amber-500","from-cyan-500 to-blue-600"];
 const CATEGORIES = ["Dining","Groceries","Transport","Shopping","Utilities","Fuel","Travel","Entertainment","Healthcare","Education","Government","Telecom","Other"];
 const REPAY_METHODS: {value: CardRepayment["method"], label: string, icon: string}[] = [

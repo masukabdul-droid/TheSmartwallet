@@ -29,7 +29,6 @@ import MoneyLenders from "@/pages/MoneyLenders";
 import Rules from "@/pages/Rules";
 import Trash from "@/pages/Trash";
 import NotFound from "@/pages/NotFound";
-
 import CurrencyConverter from '@/components/CurrencyConverter';
 import Index from "./pages/Index";
 import { LogIn } from "lucide-react";

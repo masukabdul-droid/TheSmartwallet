@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Wallet, Plus, Trash2, Edit2, Building2, Banknote, TrendingUp, ArrowLeft, ArrowRightLeft, CreditCard, Target, Briefcase } from "lucide-react";
-import { useDB, Account, uid } from "@/lib/database";
+import { useDB, Account, uid, Transfer } from "@/lib/database";
 
 const CURRENCIES = ["AED","BDT","USD","EUR","GBP","SAR","OMR","KWD"];
 const ACCOUNT_TYPES: Account["type"][] = ["savings","current","investment","cash","foreign"];
@@ -33,53 +33,37 @@ export default function Accounts() {
     setOpen(false);
   };
 
-const handleRepayment = (amount: number, date: string, fromAccountId: string, toAccountId: string) => {
-  // Step 1: Update Credit Card - Deduct repayment from credit card balance
-  
-  
-  const updatedCreditCards = creditCards.map(card =>
-    card.id === toAccountId
-      ? {
-          ...card,
-          balance: card.balance - amount, // Deduct from credit card balance
-          repayments: [
-            ...(card.repayments || []),
-            { id: uid(), date, amount, method: 'bank transfer', notes: 'Repayment from account' }
-          ]
-        }
-      : card
-  );
+// ------------ Fix for credit card repayment ------------
+const handleRepayment = (
+  amount: number,
+  date: string,
+  fromAccountId: string,
+  toCreditCardId: string
+) => {
 
-  // Call updateCreditCard if available in useDB
-  updatedCreditCards.forEach(card => {
-    updateCreditCard(card.id, card);  // Assuming `updateCreditCard` is available in `useDB`
-  });
+  const fromAccount = accounts.find(a => a.id === fromAccountId);
+  const cc = creditCards.find(c => c.id === toCreditCardId);
 
-  // Step 2: Update Account - Add repayment transaction as a credit to the account
-  const updatedAccounts = accounts.map(account =>
-    account.id === fromAccountId
-      ? {
-          ...account,
-          transactions: [
-            ...account.transactions,
-            { 
-              id: uid(), 
-              date, 
-              amount, 
-              category: 'repayment', 
-              note: `Repayment to Credit Card - ${toAccountId}`,
-              type: 'credit', // This is a credit transaction in the account
-            }
-          ]
-        }
-      : account
-  );
+  if (!fromAccount || !cc) return; // safety
 
-  // Call updateAccount for the account repayment
-  updatedAccounts.forEach(account => {
-    updateAccount(account.id, account);  // Assuming `updateAccount` is available in `useDB`
-  });
+  const newTransfer = {
+    id: Date.now().toString(),
+    date,
+    fromAccountId,
+    toCreditCardId,
+    amountSent: amount,
+    amountReceived: amount,
+    currencyFrom: fromAccount.currency,
+    currencyTo: fromAccount.currency,
+    fee: 0,
+    notes: "Credit Card Repayment",
+  };
+
+  updateTransfers([...transfers, newTransfer]);
 };
+
+  // 4. Create a new transaction for the repayment (without setTransactions)
+  
 
   const selectedAcc = accounts.find(a=>a.id===selectedAccId);
   const accDetail = useMemo(() => {
@@ -91,7 +75,7 @@ const handleRepayment = (amount: number, date: string, fromAccountId: string, to
     const acGoals = goals.filter(g=>g.linkedAccountId===selectedAccId||g.transactions.some(gt=>gt.fromAccountId===selectedAccId));
     const acBiz = businesses.filter(b=>b.transactions.some(bt=>bt.accountId===selectedAccId));
     const acRepayments = creditCards.flatMap(c=>(c.repayments||[]).filter(r=>r.sourceAccountId===selectedAccId).map(r=>({...r,cardName:c.name})));
-    
+   
     // Updated calculation logic:
     // Total In: Transactions > 0 + Incoming Transfers
     const txIn = acTxs.filter(t=>t.amount>0).reduce((s,t)=>s+t.amount,0);
@@ -110,7 +94,7 @@ const handleRepayment = (amount: number, date: string, fromAccountId: string, to
 
 //Updating Transaction List for Repayments
 
-{accDetail.acTxs.map(t => (
+{accDetail?.acTxs?.map(t => (
   <div key={t.id} className="flex items-center justify-between py-1.5 border-b border-border/40 last:border-0">
     <div>
       <p className="text-xs font-medium text-foreground">{t.name}</p>
