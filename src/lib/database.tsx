@@ -129,6 +129,7 @@ export interface CardTransaction {
   category: string; isInstallment?: boolean; installmentMonths?: number;
   installmentFee?: number; installmentInterestRate?: number;
   installmentLoanId?: string; // links to Loan in loans[]
+  linkedTransactionId?: string;
   loyaltyPoints?: number; pointsRedeemed?: number;
   companyId?: string; loyaltyProgramId?: string; discountCardId?: string; discountAmount?: number;
   earnLoyaltyProgramId?: string; // earn points while purchasing
@@ -1070,13 +1071,63 @@ export function DatabaseProvider({ children, userId }: { children: ReactNode; us
       const newTxs = txs.map(t => ({ ...t, id: uid() }));
       setTransactions(p => [...newTxs, ...p]);
     },
-    updateTransaction: (id, u) => setTransactions(p => p.map(t => t.id===id ? { ...t, ...u } : t)),
-    deleteTransaction: id => {
-      const tx = transactions.find(t => t.id===id);
-      if (tx) saveToTrashSb({ id: uid(), type: "transaction", label: tx.name, detail: `${tx.date} · ${tx.category} · ${tx.amount}`, deletedAt: new Date().toISOString(), data: tx });
-      sbDelete("transactions", id);
-      setTransactionsRaw(p => p.filter(t => t.id!==id));
-    },
+    updateTransaction: (id, u) => {
+  setTransactions(p => p.map(t => t.id === id ? { ...t, ...u } : t));
+
+  // ← NEW: sync edits back to the card transaction
+  const tx = transactions.find(t => t.id === id);
+  if (tx?.isCreditCard && tx?.creditCardId) {
+    setCreditCards(p => p.map(c => {
+      if (c.id !== tx.creditCardId) return c;
+      const updated = c.transactions.map(t =>
+        t.linkedTransactionId === id
+          ? { ...t,
+              description: u.name ?? t.description,
+              amount: u.amount ?? t.amount,
+              category: u.category ?? t.category,
+              date: u.date ?? t.date,
+            }
+          : t
+      );
+      const newBalance = updated.reduce((s, t) => s + t.amount, 0);
+      return { ...c, transactions: updated, balance: newBalance };
+    }));
+  }
+},
+
+deleteTransaction: id => {
+  const tx = transactions.find(t => t.id === id);
+  if (tx) saveToTrashSb({ id: uid(), type: "transaction", label: tx.name, detail: `${tx.date} · ${tx.category} · ${tx.amount}`, deletedAt: new Date().toISOString(), data: tx });
+  sbDelete("transactions", id);
+  setTransactionsRaw(p => p.filter(t => t.id !== id));
+
+  // ← NEW: if this transaction belongs to a CC, remove it from the card too
+  if (tx?.isCreditCard && tx?.creditCardId) {
+    setCreditCards(p => p.map(c => {
+      if (c.id !== tx.creditCardId) return c;
+      const remaining = c.transactions.filter(t => t.linkedTransactionId !== id);
+      const newBalance = remaining.reduce((s, t) => s + t.amount, 0);
+      return { ...c, transactions: remaining, balance: newBalance };
+    }));
+  }
+},
+
+
+deleteCardTransaction: (cardId, txId) => setCreditCards(p => p.map(c => {
+  if (c.id !== cardId) return c;
+
+  // ← NEW: also remove the mirrored global transaction
+  const cardTx = c.transactions.find(t => t.id === txId);
+  if (cardTx?.linkedTransactionId) {
+    setTransactionsRaw(prev => prev.filter(t => t.id !== cardTx.linkedTransactionId));
+    sbDelete("transactions", cardTx.linkedTransactionId);
+  }
+
+  const remaining = c.transactions.filter(t => t.id !== txId);
+  const newBalance = remaining.reduce((s, t) => s + t.amount, 0);
+  return { ...c, transactions: remaining, balance: newBalance };
+})),
+
 
     budgets,
     addBudget: b => setBudgets(p => [...p, { ...b, id: uid() }]),
@@ -1165,6 +1216,30 @@ export function DatabaseProvider({ children, userId }: { children: ReactNode; us
     if (c.id !== cardId) return c;
     const newBalance = c.balance + tx.amount;
     let newTx = { ...tx, id: uid(), installmentLoanId: loanId, linkedTransactionId: linkedTxId }; // ← add linkedTransactionId
+        if (c.loyaltyProgramId && !tx.loyaltyPoints) {
+      const prog = loyaltyPrograms.find(lp => lp.id === c.loyaltyProgramId);
+      if (prog?.autoDetect && prog.earnRate && tx.amount < 0) {
+        newTx = { ...newTx, loyaltyPoints: Math.floor(Math.abs(tx.amount) * prog.earnRate), loyaltyProgramId: c.loyaltyProgramId };
+      }
+    }
+     // ← NEW: mirror into global transactions so delete/edit syncs both ways
+  const card = creditCards.find(c => c.id === cardId);
+  setTransactions(prev => [{
+    id: linkedTxId,
+    name: tx.description,
+    amount: tx.amount,
+    type: "expense" as const,
+    category: tx.category,
+    accountId: cardId,
+    date: tx.date,
+    isCreditCard: true,
+    creditCardId: cardId,
+  }, ...prev]);
+
+  // ... rest of your existing installment/loyalty logic unchanged ...
+
+
+
     // ... rest of your existing loyalty/installment logic unchanged ...
     return { ...c, balance: newBalance, transactions: [newTx, ...c.transactions] };
   }));
