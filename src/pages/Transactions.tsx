@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Badge } from "@/components/ui/badge";
 import { Plus, Search, Edit2, Trash2, TrendingUp, TrendingDown, DollarSign, CreditCard, Filter, ArrowRightLeft, Star, Tag, Pencil, Building2, Settings } from "lucide-react";
 import { useDB, Transaction, Company } from "@/lib/database";
-
+// #MAMOON
 const CATEGORIES = ["Income","Housing","Groceries","Food","Transport","Entertainment","Shopping","Utilities","Telecom","Transfer","Cash","Insurance","Government","Healthcare","Education","Goals","Rental Income","Business Revenue","Business Expense","Loan Payment","Money Transfer","Credit Card Payment","Other"];
 const EMPTY_FORM = { name:"", amount:"", type:"expense" as "income"|"expense"|"transfer", category:"Other", accountId:"", transferToAccountId:"", date: new Date().toISOString().slice(0,10), notes:"", companyId:"", loyaltyProgramId:"", loyaltyPoints:"", discountCardId:"", discountAmount:"" };
 

@@ -1071,28 +1071,33 @@ export function DatabaseProvider({ children, userId }: { children: ReactNode; us
       const newTxs = txs.map(t => ({ ...t, id: uid() }));
       setTransactions(p => [...newTxs, ...p]);
     },
-    updateTransaction: (id, u) => {
-  setTransactions(p => p.map(t => t.id === id ? { ...t, ...u } : t));
+updateTransaction: (id, u) => {
+  setTransactions(p => {
+    const updated = p.map(t => t.id === id ? { ...t, ...u } : t);
 
-  // ← NEW: sync edits back to the card transaction
-  const tx = transactions.find(t => t.id === id);
-  if (tx?.isCreditCard && tx?.creditCardId) {
-    setCreditCards(p => p.map(c => {
-      if (c.id !== tx.creditCardId) return c;
-      const updated = c.transactions.map(t =>
-        t.linkedTransactionId === id
-          ? { ...t,
-              description: u.name ?? t.description,
-              amount: u.amount ?? t.amount,
-              category: u.category ?? t.category,
-              date: u.date ?? t.date,
-            }
-          : t
-      );
-      const newBalance = updated.reduce((s, t) => s + t.amount, 0);
-      return { ...c, transactions: updated, balance: newBalance };
-    }));
-  }
+    // Sync edits to the card transaction if it's a CC transaction
+    const tx = p.find(t => t.id === id);
+    if (tx?.isCreditCard && tx?.creditCardId) {
+      setCreditCards(cards => cards.map(c => {
+        if (c.id !== tx.creditCardId) return c;
+        const updatedCardTxs = c.transactions.map(t =>
+          t.linkedTransactionId === id
+            ? {
+                ...t,
+                description: u.name ?? t.description,
+                amount: u.amount ?? t.amount,
+                category: u.category ?? t.category,
+                date: u.date ?? t.date,
+              }
+            : t
+        );
+        const newBalance = updatedCardTxs.reduce((s, t) => s + t.amount, 0);
+        return { ...c, transactions: updatedCardTxs, balance: newBalance };
+      }));
+    }
+
+    return updated;
+  });
 },
 
 deleteTransaction: id => {
@@ -1222,6 +1227,11 @@ deleteCardTransaction: (cardId, txId) => setCreditCards(p => p.map(c => {
         newTx = { ...newTx, loyaltyPoints: Math.floor(Math.abs(tx.amount) * prog.earnRate), loyaltyProgramId: c.loyaltyProgramId };
       }
     }
+
+
+        return { ...c, balance: newBalance, transactions: [newTx, ...c.transactions] };
+  }));
+
      // ← NEW: mirror into global transactions so delete/edit syncs both ways
   const card = creditCards.find(c => c.id === cardId);
   setTransactions(prev => [{
@@ -1241,8 +1251,7 @@ deleteCardTransaction: (cardId, txId) => setCreditCards(p => p.map(c => {
 
 
     // ... rest of your existing loyalty/installment logic unchanged ...
-    return { ...c, balance: newBalance, transactions: [newTx, ...c.transactions] };
-  }));
+
 
 
   
@@ -1308,19 +1317,28 @@ deleteCardTransaction: (cardId, txId) => setCreditCards(p => p.map(c => {
         setTransactions(prev => [{ id: uid(), name: `CC Repayment - ${card?.name||"Card"}`, amount: -repayment.amount, type: "expense" as const, category: "Credit Card Payment", accountId: repayment.sourceAccountId!, date: repayment.date, notes: repayment.notes }, ...prev]);
       }
     },
-    deleteCardRepayment: (cardId, repaymentId) => setCreditCards(p => p.map(c => {
-      if (c.id!==cardId) return c;
-      const rep = (c.repayments||[]).find(r => r.id===repaymentId);
-      const remaining = (c.repayments||[]).filter(r => r.id!==repaymentId);
-      const newBalance = rep ? c.balance - rep.amount : c.balance;
-      return { ...c, repayments: remaining, balance: newBalance };
-    })),
-    deleteCreditCard: id => {
-      const c = creditCards.find(c => c.id === id);
-      if (c) saveToTrashSb({ id: uid(), type: "creditcard", label: c.name, detail: `${c.issuer} ···${c.last4}`, deletedAt: new Date().toISOString(), data: c });
-      sbDelete("credit_cards", id);
-      setCreditCardsRaw(p => p.filter(c => c.id!==id));
-    },
+
+deleteCardRepayment: (cardId, repaymentId) => {
+  const card = creditCards.find(c => c.id === cardId);
+  const rep = (card?.repayments || []).find(r => r.id === repaymentId);
+
+  // ← NEW: reverse the expense transaction created when repayment was added
+  if (rep?.sourceAccountId) {
+    setTransactionsRaw(prev => prev.filter(t =>
+      !(t.category === "Credit Card Payment" &&
+        t.accountId === rep.sourceAccountId &&
+        t.amount === -rep.amount &&
+        t.date === rep.date)
+    ));
+  }
+
+  setCreditCards(p => p.map(c => {
+    if (c.id !== cardId) return c;
+    const remaining = (c.repayments || []).filter(r => r.id !== repaymentId);
+    const newBalance = rep ? c.balance - rep.amount : c.balance;
+    return { ...c, repayments: remaining, balance: newBalance };
+  }));
+},
 
     companies,
     addCompany: c => setCompanies(p => [...p, { ...c, id: uid() }]),

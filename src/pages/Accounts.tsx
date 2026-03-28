@@ -94,20 +94,7 @@ const handleRepayment = (
 
 //Updating Transaction List for Repayments
 
-{accDetail?.acTxs?.map(t => (
-  <div key={t.id} className="flex items-center justify-between py-1.5 border-b border-border/40 last:border-0">
-    <div>
-      <p className="text-xs font-medium text-foreground">{t.name}</p>
-      <p className="text-[10px] text-muted-foreground">{t.category} · {t.date}</p>
-      {(t as any).fee > 0 && <p className="text-[9px] text-muted-foreground italic">Fee: {selectedAcc.currency} {(t as any).fee}</p>}
-    </div>
-    <div className="text-right">
-      <span className={`text-xs font-semibold ${t.amount >= 0 ? "stat-up" : "stat-down"}`}>
-        {t.amount >= 0 ? "+" : ""}{selectedAcc.currency} {Math.abs(t.amount).toLocaleString()}
-      </span>
-    </div>
-  </div>
-))}
+
 
 
 
