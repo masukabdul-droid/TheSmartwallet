@@ -9,9 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { CreditCard, Plus, Trash2, Edit2, Sparkles, Gift, ArrowDownToLine, Star, Info, RefreshCw } from "lucide-react";
 import { useDB, CreditCard as CCType, CardCashbackRule, CardRepayment, CardTransaction } from "@/lib/database";
 import { SearchFilter, EMPTY_FILTER, matchesFilter, SearchFilterState } from "@/components/ui/search-filter";
-
-// #MAMOON
-
+ 
 const CARD_COLORS = ["from-amber-500 to-orange-600","from-violet-500 to-purple-700","from-slate-600 to-slate-800","from-emerald-500 to-teal-600","from-rose-500 to-pink-600","from-blue-500 to-indigo-600","from-yellow-400 to-amber-500","from-cyan-500 to-blue-600"];
 const CATEGORIES = ["Dining","Groceries","Transport","Shopping","Utilities","Fuel","Travel","Entertainment","Healthcare","Education","Government","Telecom","Other"];
 const REPAY_METHODS: {value: CardRepayment["method"], label: string, icon: string}[] = [
@@ -48,7 +46,7 @@ const CASHBACK_PRESETS: Record<string, CardCashbackRule[]> = {
   miles_1_5: [{ category:"All", rate:1.5, description:"1.5 miles per AED spent" }],
   none: [],
 };
-
+ 
 const EMPTY_CARD = { name:"", issuer:"", last4:"", limit:"", balance:"", minPayment:"", dueDate:"", statementDate:"", color:CARD_COLORS[0], cashbackType:"none" };
 interface TxFormData {
   date: string;
@@ -65,7 +63,7 @@ interface TxFormData {
   earnLoyaltyProgramId: string;
   earnLoyaltyPointsManual: string;
 }
-
+ 
 const EMPTY_TX: TxFormData = { 
   date:new Date().toISOString().slice(0,10), 
   description:"", 
@@ -83,21 +81,18 @@ const EMPTY_TX: TxFormData = {
 };
 const EMPTY_REPAY = { date:new Date().toISOString().slice(0,10), amount:"", method:"bank_account" as CardRepayment["method"], sourceAccountId:"", notes:"" };
 const todayStr = new Date().toISOString().slice(0,10);
-
+ 
 function calcUtilization(card: CCType) {
   const spent = card.transactions.reduce((s,t)=>s+t.amount,0);
   const repaid = (card.repayments || []).reduce((s,r)=>s+r.amount,0);
-
-const rawBalance = -spent;
-const balance = Object.is(rawBalance, -0) ? 0 : rawBalance;
-
+  const rawBalance = -spent;
+  const balance = Object.is(rawBalance, -0) ? 0 : rawBalance;
   return {
     balance,
     pct: card.limit>0 ? Math.min(100,(balance/card.limit)*100) : 0
   };
 }
-
-// Category aliases: if a transaction's category matches any alias, it counts for the rule
+ 
 const CAT_ALIASES: Record<string,string[]> = {
   "dining": ["food","dining","food & dining","restaurant","restaurants","cafe","coffee","fast food","takeaway","delivery"],
   "food": ["food","dining","food & dining","restaurant","restaurants","cafe","coffee","fast food"],
@@ -123,7 +118,7 @@ function catMatches(ruleCategory: string, txCategory: string): boolean {
   if (aliases && aliases.includes(t)) return true;
   return false;
 }
-
+ 
 function calcMonthlyCashback(card: CCType, txs: Array<{amount:number,category:string}>) {
   const rules = card.cashbackRules||[];
   if (!rules.length) return 0;
@@ -139,9 +134,17 @@ function calcMonthlyCashback(card: CCType, txs: Array<{amount:number,category:st
     return s+Math.abs(t.amount)*rule.rate/100;
   },0);
 }
-
+ 
 export default function CreditCards() {
-  const { creditCards, accounts, loyaltyPrograms, addCreditCard, updateCreditCard, addCardTransaction, updateCardTransaction, deleteCardTransaction, addCardRepayment, deleteCardRepayment, deleteCreditCard, addLoyaltyTx , getAccountBalance} = useDB();
+  const {
+    creditCards, accounts, loyaltyPrograms,
+    addCreditCard, updateCreditCard, deleteCreditCard,
+    addCardTransaction, updateCardTransaction, deleteCardTransaction,
+    addCardRepayment, deleteCardRepayment,
+    addLoyaltyTx,
+    getAccountBalance,
+  } = useDB();
+ 
   const [activeView, setActiveView] = useState<"cards"|"cashback">("cards");
   const [filter, setFilter] = useState<SearchFilterState>(EMPTY_FILTER);
   const [cardTab, setCardTab] = useState<Record<string,"transactions"|"repayments">>({});
@@ -159,7 +162,7 @@ export default function CreditCards() {
   const [rulesOpen, setRulesOpen] = useState(false);
   const [rulesCardId, setRulesCardId] = useState("");
   const [monthFilter, setMonthFilter] = useState(new Date().toISOString().slice(0,7));
-
+ 
   const totalLimit = creditCards.reduce((s,c)=>s+c.limit,0);
   const totalBalance = creditCards.reduce((s,c)=>s+calcUtilization(c).balance,0);
   const totalCashbackBal = creditCards.reduce((s,c)=>s+(c.cashbackBalance||0),0);
@@ -167,7 +170,7 @@ export default function CreditCards() {
     const txs=c.transactions.filter(t=>t.date.slice(0,7)===monthFilter);
     return s+calcMonthlyCashback(c,txs);
   },0),[creditCards,monthFilter]);
-
+ 
   const openCardAdd = () => { setEditCard(null); setCardForm(EMPTY_CARD); setCustomRules([]); setCardOpen(true); };
   const openCardEdit = (c: CCType) => { setEditCard(c); setCardForm({ name:c.name, issuer:c.issuer, last4:c.last4, limit:String(c.limit), balance:String(c.balance), minPayment:String(c.minPayment), dueDate:c.dueDate, statementDate:c.statementDate, color:c.color, cashbackType:c.cashbackType }); setCustomRules(c.cashbackRules||[]); setCardOpen(true); };
   const handleSaveCard = () => {
@@ -177,7 +180,7 @@ export default function CreditCards() {
     if (editCard) updateCreditCard(editCard.id, data); else addCreditCard(data);
     setCardOpen(false);
   };
-
+ 
   const openTxDialog = (cardId: string, tx?: CardTransaction) => { 
     setTxDialogCardId(cardId); 
     setEditingTx(tx||null); 
@@ -198,6 +201,7 @@ export default function CreditCards() {
     } : EMPTY_TX); 
     setTxDialogOpen(true); 
   };
+ 
   const handleSaveTx = () => {
     const amount = parseFloat(txForm.amount);
     if (!txForm.description||isNaN(amount)||!txDialogCardId) return;
@@ -215,7 +219,6 @@ export default function CreditCards() {
       const pts = parseFloat(txForm.redeemPointsAmt)||0;
       if (pts>0) addLoyaltyTx(txForm.redeemPointsProgId, { date:txForm.date, points:pts, type:"redeemed", description:`Redeemed for ${txForm.description}`, redeemMethod:"purchase" });
     }
-    // Earn loyalty points at purchase time
     if (txForm.earnLoyaltyProgramId) {
       const prog = loyaltyPrograms.find(p=>p.id===txForm.earnLoyaltyProgramId);
       const manualPts = parseFloat(txForm.earnLoyaltyPointsManual||"");
@@ -223,7 +226,6 @@ export default function CreditCards() {
       const pts = manualPts > 0 ? manualPts : autoPts;
       if (pts>0) addLoyaltyTx(txForm.earnLoyaltyProgramId, { date:txForm.date, points:pts, type:"earned", description:`Earned on: ${txForm.description}` });
     }
-    // Auto-earn cashback per transaction (not just monthly)
     if (!editingTx) {
       const card = creditCards.find(c => c.id === txDialogCardId);
       if (card && card.cashbackType !== "none" && card.cashbackType !== "liv_tiered") {
@@ -237,43 +239,57 @@ export default function CreditCards() {
     }
     setTxDialogOpen(false);
   };
-
-  const openRepay = (cardId: string) => { setRepayCardId(cardId); const card=creditCards.find(c=>c.id===cardId); const util=card?calcUtilization(card):{balance:0}; setRepayForm({...EMPTY_REPAY,amount:String(util.balance)}); setRepayOpen(true); };
-const handleRepay = () => {
-  const amt = parseFloat(repayForm.amount);
-  if (!amt || !repayCardId) return;
-
-  // 1. Add repayment record (for history)
-  addCardRepayment({
-    cardId: repayCardId,
-    date: repayForm.date,
-    amount: amt,
-    method: repayForm.method,
-    sourceAccountId: repayForm.method==="bank_account" ? repayForm.sourceAccountId : undefined,
-    sourceCardId: repayForm.method==="other_card" ? repayForm.sourceAccountId : undefined,
-    notes: repayForm.notes || undefined
-  });
-
-  // 2. 🔥 ALSO add as a positive transaction
-  addCardTransaction(repayCardId, {
-    date: repayForm.date,
-    description: "Card Repayment",
-    amount: amt, // positive!
-    category: "Payment"
-  });
-
-  setRepayOpen(false);
-};
-
+ 
+  const openRepay = (cardId: string) => {
+    setRepayCardId(cardId);
+    const card = creditCards.find(c => c.id === cardId);
+    const util = card ? calcUtilization(card) : { balance: 0 };
+    setRepayForm({ ...EMPTY_REPAY, amount: String(util.balance) });
+    setRepayOpen(true);
+  };
+ 
+  // ─── handleRepay ──────────────────────────────────────────────────────────────
+  // ✅ When repaying from a bank account, we ALSO add a negative account transaction
+  //    so the account balance and Transactions page both reflect the outflow.
+  const handleRepay = () => {
+    const amt = parseFloat(repayForm.amount);
+    if (!amt || !repayCardId) return;
+ 
+    const card = creditCards.find(c => c.id === repayCardId);
+ 
+    // 1. Record the repayment on the credit card (history + reduces utilization via calcUtilization)
+    addCardRepayment({
+      cardId: repayCardId,
+      date: repayForm.date,
+      amount: amt,
+      method: repayForm.method,
+      sourceAccountId: repayForm.method === "bank_account" ? repayForm.sourceAccountId : undefined,
+      sourceCardId: repayForm.method === "other_card" ? repayForm.sourceAccountId : undefined,
+      notes: repayForm.notes || undefined,
+    });
+ 
+    // NOTE: addCardRepayment in the database layer already writes an account transaction
+    // when sourceAccountId is provided. We must NOT call addTransaction here as well
+    // or the deduction will appear twice in Accounts and Transactions pages.
+ 
+    // Deduct cashback balance if repaying via cashback
+    if (repayForm.method === "cashback" && card) {
+      const currentCB = card.cashbackBalance || 0;
+      updateCreditCard(repayCardId, { cashbackBalance: Math.max(0, currentCB - amt) });
+    }
+ 
+    setRepayOpen(false);
+  };
+ 
   const handleEarnCashback = (cardId: string) => {
     const card = creditCards.find(c=>c.id===cardId); if(!card) return;
     const txs = card.transactions.filter(t=>t.date.slice(0,7)===monthFilter);
     const earned = calcMonthlyCashback(card,txs);
     if (earned>0) updateCreditCard(cardId,{cashbackBalance:(card.cashbackBalance||0)+earned});
   };
-
+ 
   const getTab = (id: string) => cardTab[id]||"transactions";
-
+ 
   return (
     <div className="space-y-6">
       <PageHeader title="Credit Cards" subtitle={`${creditCards.length} cards`}
@@ -286,20 +302,16 @@ const handleRepay = () => {
             <Button className="gap-2" onClick={openCardAdd}><Plus className="w-4 h-4"/>Add Card</Button>
           </div>
         }/>
-
+ 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard title="Total Limit" value={`AED ${totalLimit.toLocaleString()}`} icon={CreditCard}/>
         <StatCard title="Total Used" value={`AED ${totalBalance.toLocaleString()}`} icon={CreditCard} changeType={totalBalance>totalLimit*0.3?"down":"up"}/>
         <StatCard title="Est. Cashback" value={`AED ${thisMonthCashback.toFixed(2)}`} icon={Gift} changeType="up"/>
         <StatCard title="Cashback Balance" value={`AED ${totalCashbackBal.toFixed(2)}`} icon={Star} changeType="up"/>
       </div>
-
+ 
       <SearchFilter value={filter} onChange={setFilter} placeholder="Search cards…" />
-
-
-{/* CREDITCARD RENDER */}
-
-
+ 
       {activeView==="cashback" && (
         <div className="space-y-4">
           <div className="flex items-center gap-2">
@@ -308,29 +320,18 @@ const handleRepay = () => {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
             {creditCards.map((card,i)=>{
-
-
-  const today = new Date();
-  const due = card.dueDate ? new Date(card.dueDate) : null;
-
-  // ✅ REPLACE your old isDueSoon/isOverdue with THIS
-  const daysLeft = due
-    ? Math.ceil((due.getTime() - today.getTime()) / (1000*60*60*24))
-    : null;
-
-  const isOverdue = daysLeft !== null && daysLeft < 0;
-  const isDueSoon = daysLeft !== null && daysLeft >= 0 && daysLeft <= 3;
-
-
+              const today = new Date();
+              const due = card.dueDate ? new Date(card.dueDate) : null;
+              const daysLeft = due ? Math.ceil((due.getTime() - today.getTime()) / (1000*60*60*24)) : null;
+              const isOverdue = daysLeft !== null && daysLeft < 0;
+              const isDueSoon = daysLeft !== null && daysLeft >= 0 && daysLeft <= 3;
               const txs = card.transactions.filter(t=>t.date.slice(0,7)===monthFilter);
               const earned = calcMonthlyCashback(card,txs);
               const balance = card.cashbackBalance||0;
               const monthSpend = txs.filter(t=>t.amount<0).reduce((s,t)=>s+Math.abs(t.amount),0);
-              console.log("CARD DEBUG", card.transactions, card.repayments);
               return (
                 <div key={card.id} className="glass-card p-4">
                   <div className="flex items-center justify-between mb-3">
-                    {/* <div><p className="font-semibold text-sm">{card.name}</p><p className="text-xs text-muted-foreground">{card.cashbackType}</p></div> */}
                     <div className="text-right"><p className="text-lg font-bold stat-up">AED {earned.toFixed(2)}</p><p className="text-xs text-muted-foreground">this month</p></div>
                   </div>
                   <div className="grid grid-cols-2 gap-2 mb-3">
@@ -370,7 +371,7 @@ const handleRepay = () => {
           )}
         </div>
       )}
-
+ 
       {activeView==="cards" && (
         <div className="space-y-4">
           <div className="flex items-center gap-2">
@@ -385,28 +386,15 @@ const handleRepay = () => {
               const monthlyCashback = calcMonthlyCashback(card,monthTxs);
               const repayments = card.repayments||[];
               const tab = getTab(card.id);
-             
-             
               return (
                 <motion.div key={card.id} initial={{opacity:0,y:10}} animate={{opacity:1,y:0}} transition={{delay:i*0.1}} className="glass-card overflow-hidden">
                   <div className={`bg-gradient-to-r ${card.color} p-5`}>
-                    {/* <p className="text-white font-display font-bold text-lg">{card.name}</p> */}
-
-
-
-
                     <div className="flex items-start justify-between">
-                      <div><p className="text-white/70 text-xs mb-0.5">
-  {card.issuer}
-</p>
-
-<p className="text-white font-display font-bold text-lg">
-  {card.name}
-</p>
-
-<p className="text-white/60 text-xs mt-1">
-  •••• •••• •••• {card.last4}
-</p></div>
+                      <div>
+                        <p className="text-white/70 text-xs mb-0.5">{card.issuer}</p>
+                        <p className="text-white font-display font-bold text-lg">{card.name}</p>
+                        <p className="text-white/60 text-xs mt-1">•••• •••• •••• {card.last4}</p>
+                      </div>
                       <div className="flex gap-1.5">
                         <button onClick={()=>openRepay(card.id)} className="bg-white/20 hover:bg-white/30 text-white rounded-lg p-1.5" title="Repay"><ArrowDownToLine className="w-3.5 h-3.5"/></button>
                         <button onClick={()=>{setRulesCardId(card.id);setRulesOpen(true);}} className="bg-white/20 hover:bg-white/30 text-white rounded-lg p-1.5" title="Policy"><Sparkles className="w-3.5 h-3.5"/></button>
@@ -445,6 +433,7 @@ const handleRepay = () => {
                             <div className="flex-1 min-w-0"><p className="text-xs font-medium truncate">{tx.description}</p><p className="text-[10px] text-muted-foreground">{tx.category} · {tx.date}{tx.isInstallment?` · ${tx.installmentMonths}mo`:""}</p></div>
                             <div className="flex items-center gap-1.5">
                               <span className={`text-xs font-semibold ${tx.amount>=0?"stat-up":"stat-down"}`}>{tx.amount>=0?"+":""}AED {Math.abs(tx.amount).toLocaleString()}</span>
+                              {/* ✅ Edit/Delete on CC page always worked — kept as-is */}
                               <button onClick={()=>openTxDialog(card.id,tx)} className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground p-0.5"><Edit2 className="w-3 h-3"/></button>
                               <button onClick={()=>deleteCardTransaction(card.id,tx.id)} className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive p-0.5"><Trash2 className="w-3 h-3"/></button>
                             </div>
@@ -473,16 +462,7 @@ const handleRepay = () => {
           </div>
         </div>
       )}
-
-
-
-
-
-
-
-
-
-
+ 
       {/* Add/Edit Card */}
       <Dialog open={cardOpen} onOpenChange={setCardOpen}>
         <DialogContent className="sm:max-w-lg bg-card border-border max-h-[90vh] overflow-y-auto">
@@ -549,18 +529,14 @@ const handleRepay = () => {
               <div className="flex gap-2 flex-wrap">{CARD_COLORS.map(c=><button key={c} onClick={()=>setCardForm(f=>({...f,color:c}))} className={`w-10 h-6 rounded-md bg-gradient-to-r ${c} border-2`} style={{borderColor:cardForm.color===c?"white":"transparent"}}/>)}</div>
             </div>
           </div>
-
-
-
-          
           <DialogFooter>
             <Button variant="outline" onClick={()=>setCardOpen(false)}>Cancel</Button>
             <Button onClick={handleSaveCard} disabled={!cardForm.name}>{editCard?"Save Changes":"Add Card"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {/* Add TX */}
+ 
+      {/* Add/Edit TX */}
       <Dialog open={txDialogOpen} onOpenChange={setTxDialogOpen}>
         <DialogContent className="w-full sm:max-w-sm bg-card border-border">
           <DialogHeader><DialogTitle>{editingTx?"Edit":"Add"} Transaction</DialogTitle></DialogHeader>
@@ -604,7 +580,7 @@ const handleRepay = () => {
                 </>)}
               </div>
             )}
-          {loyaltyPrograms.length>0 && (
+            {loyaltyPrograms.length>0 && (
               <div className="border border-border rounded-lg p-3 space-y-2">
                 <Label className="text-xs flex items-center gap-1.5"><Star className="w-3.5 h-3.5 text-amber-400"/>Earn Loyalty Points on Purchase</Label>
                 <Select value={txForm.earnLoyaltyProgramId||"_none"} onValueChange={v=>setTxForm(f=>({...f,earnLoyaltyProgramId:v==="_none"?"":v}))}>
@@ -626,8 +602,8 @@ const handleRepay = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {/* Repayment */}
+ 
+      {/* Repayment Dialog */}
       <Dialog open={repayOpen} onOpenChange={setRepayOpen}>
         <DialogContent className="w-full sm:max-w-sm bg-card border-border">
           <DialogHeader><DialogTitle>Record Card Repayment</DialogTitle></DialogHeader>
@@ -643,15 +619,32 @@ const handleRepay = () => {
               </Select>
             </div>
             {repayForm.method==="bank_account" && (
-              <div className="space-y-1.5"><Label>Deduct from Account</Label>
+              <div className="space-y-1.5">
+                <Label>Deduct from Account</Label>
                 <Select value={repayForm.sourceAccountId||"_none"} onValueChange={v=>setRepayForm(f=>({...f,sourceAccountId:v==="_none"?"":v}))}>
                   <SelectTrigger className="bg-background border-border"><SelectValue placeholder="Select account"/></SelectTrigger>
-                  <SelectContent><SelectItem value="_none">Don't deduct</SelectItem>{accounts.map(a=><SelectItem key={a.id} value={a.id}>{a.name} — {a.currency} {getAccountBalance(a.id).toLocaleString()} avail.</SelectItem>)}</SelectContent>
+                  <SelectContent>
+                    <SelectItem value="_none">Don't deduct</SelectItem>
+                    {accounts.map(a=><SelectItem key={a.id} value={a.id}>{a.name} — {a.currency} {getAccountBalance(a.id).toLocaleString()} avail.</SelectItem>)}
+                  </SelectContent>
                 </Select>
+                {repayForm.sourceAccountId && repayForm.sourceAccountId !== "_none" && repayForm.amount && (
+                  <p className="text-[11px] text-primary bg-primary/10 rounded-md px-2 py-1.5">
+                    ✓ AED {repayForm.amount} will be recorded against the selected account.
+                  </p>
+                )}
               </div>
             )}
-            {repayForm.method==="cashback" && <div className="p-2 bg-primary/10 rounded-lg text-xs text-primary flex items-center gap-2"><Info className="w-3.5 h-3.5"/>Deducts from your cashback balance (AED {(creditCards.find(c=>c.id===repayCardId)?.cashbackBalance||0).toFixed(2)} available)</div>}
-            {repayForm.method==="loyalty_points" && loyaltyPrograms.length>0 && <div className="p-2 bg-amber-500/10 rounded-lg text-xs text-amber-400 flex items-center gap-2"><Star className="w-3.5 h-3.5"/>Available: {loyaltyPrograms[0].pointsBalance.toLocaleString()} pts</div>}
+            {repayForm.method==="cashback" && (
+              <div className="p-2 bg-primary/10 rounded-lg text-xs text-primary flex items-center gap-2">
+                <Info className="w-3.5 h-3.5"/>Deducts from your cashback balance (AED {(creditCards.find(c=>c.id===repayCardId)?.cashbackBalance||0).toFixed(2)} available)
+              </div>
+            )}
+            {repayForm.method==="loyalty_points" && loyaltyPrograms.length>0 && (
+              <div className="p-2 bg-amber-500/10 rounded-lg text-xs text-amber-400 flex items-center gap-2">
+                <Star className="w-3.5 h-3.5"/>Available: {loyaltyPrograms[0].pointsBalance.toLocaleString()} pts
+              </div>
+            )}
             <div className="space-y-1.5"><Label>Notes (optional)</Label><Input value={repayForm.notes} onChange={e=>setRepayForm(f=>({...f,notes:e.target.value}))} placeholder="e.g. Full payment" className="bg-background border-border"/></div>
           </div>
           <DialogFooter>
@@ -660,7 +653,7 @@ const handleRepay = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
+ 
       {/* Policy Viewer */}
       <Dialog open={rulesOpen} onOpenChange={setRulesOpen}>
         <DialogContent className="w-full sm:max-w-sm bg-card border-border">
