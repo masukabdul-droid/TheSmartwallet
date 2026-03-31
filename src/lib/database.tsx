@@ -1032,8 +1032,14 @@ export function DatabaseProvider({ children, userId }: { children: ReactNode; us
     // Calculate total credit card repayments made from this account
    
     // Calculate total cash entries (deposits/withdrawals) for this account
-    const cashEntriesTotal = cashEntries.filter(ce => ce.linkedAccountId === id).reduce((sum, ce) => sum + ce.amount, 0);
 
+    // NOTE: CC repayments are already included in txTotal because addCardRepayment
+    // writes a negative transaction to transactions[] when sourceAccountId is set.
+    // Do NOT subtract ccRepaymentsTotal here — that would count the same money twice.
+    const cashEntriesTotal = cashEntries
+      .filter(ce => ce.linkedAccountId === id)
+      .reduce((sum, ce) => sum + ce.amount, 0);
+ 
     return (acct.openingBalance || 0) + txTotal - transferOut + transferIn + cashEntriesTotal;
   };
 

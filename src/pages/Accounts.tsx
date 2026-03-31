@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Wallet, Plus, Trash2, Edit2, Building2, Banknote, TrendingUp, ArrowLeft, ArrowRightLeft, CreditCard, Target, Briefcase } from "lucide-react";
-import { useDB, Account, uid, Transfer } from "@/lib/database";
+import { useDB, Account, } from "@/lib/database";
 
 const CURRENCIES = ["AED","BDT","USD","EUR","GBP","SAR","OMR","KWD"];
 const ACCOUNT_TYPES: Account["type"][] = ["savings","current","investment","cash","foreign"];
@@ -33,36 +33,36 @@ export default function Accounts() {
     setOpen(false);
   };
 
-// ------------ Fix for credit card repayment ------------
-const handleRepayment = (
-  amount: number,
-  date: string,
-  fromAccountId: string,
-  toCreditCardId: string
-) => {
+// // ------------ Fix for credit card repayment ------------
+// const handleRepayment = (
+//   amount: number,
+//   date: string,
+//   fromAccountId: string,
+//   toCreditCardId: string
+// ) => {
 
-  const fromAccount = accounts.find(a => a.id === fromAccountId);
-  const cc = creditCards.find(c => c.id === toCreditCardId);
+//   const fromAccount = accounts.find(a => a.id === fromAccountId);
+//   const cc = creditCards.find(c => c.id === toCreditCardId);
 
-  if (!fromAccount || !cc) return; // safety
+//   if (!fromAccount || !cc) return; // safety
 
-  const newTransfer = {
-    id: Date.now().toString(),
-    date,
-    fromAccountId,
-    toCreditCardId,
-    amountSent: amount,
-    amountReceived: amount,
-    currencyFrom: fromAccount.currency,
-    currencyTo: fromAccount.currency,
-    fee: 0,
-    notes: "Credit Card Repayment",
-  };
+//   const newTransfer = {
+//     id: Date.now().toString(),
+//     date,
+//     fromAccountId,
+//     toCreditCardId,
+//     amountSent: amount,
+//     amountReceived: amount,
+//     currencyFrom: fromAccount.currency,
+//     currencyTo: fromAccount.currency,
+//     fee: 0,
+//     notes: "Credit Card Repayment",
+//   };
 
-  updateTransfers([...transfers, newTransfer]);
-};
+//   updateTransfers([...transfers, newTransfer]);
+// };
 
-  // 4. Create a new transaction for the repayment (without setTransactions)
+//   // 4. Create a new transaction for the repayment (without setTransactions)
   
 
   const selectedAcc = accounts.find(a=>a.id===selectedAccId);
@@ -267,9 +267,7 @@ const handleRepayment = (
           })}
         </AnimatePresence>
       </div>
-<Button onClick={() => handleRepayment(500, "2026-03-28", selectedAccId, "credit-card-id")}>
-  Repay Credit Card
-</Button>
+
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="w-full sm:max-w-md bg-card border-border">
           <DialogHeader><DialogTitle>{editAcc?"Edit":"Add"} Account</DialogTitle></DialogHeader>

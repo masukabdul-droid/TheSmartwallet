@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Check, AlertCircle, Upload, FileSpreadsheet, Import, ChevronDown, ChevronUp, Loader2, ArrowRight, RefreshCw } from "lucide-react";
+import { Check, AlertCircle, Upload, FileSpreadsheet, Import, ChevronDown, ChevronUp, Loader2, ArrowRight, RefreshCw, CreditCard } from "lucide-react";
 import { useDB } from "@/lib/database";
 import { autoDetectAndParse, type ParsedTransaction } from "@/lib/xlsx-parsers";
 import { useToast } from "@/hooks/use-toast";
@@ -191,16 +191,17 @@ async function readXlsxRows(file: File): Promise<unknown[][]> {
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-interface BulkRule {
-  fromCategory:  string;
-  fromAccountId: string;
-  toCategory:    string;
-  toAccountId:   string;
-}
-
 // ─── Component ────────────────────────────────────────────────────────────────
+
+interface BulkRule { fromCategory: string; fromAccountId: string; toCategory: string; toAccountId: string; }
+ 
+// ─── Destination type ─────────────────────────────────────────────────────────
+// "account" = bank account, "card" = credit card
+type DestType = "account" | "card";
+ 
+
 export default function StatementImport() {
-  const { batchAddTransactions, accounts } = useDB();
+  const { batchAddTransactions, accounts, creditCards, addCardTransaction } = useDB();
   const { toast } = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -209,7 +210,13 @@ export default function StatementImport() {
   const [fileInfo,        setFileInfo]        = useState<{ name: string; size: string } | null>(null);
   const [parseResult,     setParseResult]     = useState<{ transactions: ParsedTransaction[]; bankName: string; accountType: string; currency: string; error?: string } | null>(null);
   const [selectedIds,     setSelectedIds]     = useState<Set<number>>(new Set());
+   
+  // ── Destination: account or credit card ──────────────────────────────────
+  const [destType,        setDestType]        = useState<DestType>("account");
+  
   const [targetAccountId, setTargetAccountId] = useState(accounts[0]?.id ?? "");
+  const [targetCardId,    setTargetCardId]    = useState(creditCards[0]?.id ?? "");
+
   const [imported,        setImported]        = useState(false);
   const [showAll,         setShowAll]         = useState(false);
   const [editCats,        setEditCats]        = useState<Record<number, string>>({});
@@ -316,7 +323,34 @@ export default function StatementImport() {
   const toggleAll    = () => selectedIds.size === txns.length ? setSelectedIds(new Set()) : setSelectedIds(new Set(txns.map((_, i) => i)));
 
   // ── Import ───────────────────────────────────────────────────────────────
+  
   const handleImport = () => {
+    // ── Import to Credit Card ──────────────────────────────────────────────
+    if (destType === "card") {
+      if (!targetCardId) { toast({ title:"Select a credit card first", variant:"destructive" }); return; }
+      const card = creditCards.find(c => c.id === targetCardId);
+      let count = 0;
+      txns.forEach((tx, i) => {
+        if (!selectedIds.has(i)) return;
+        const cat = editCats[i] || tx.category || "Other";
+        addCardTransaction(targetCardId, {
+          date:        tx.date,
+          description: tx.description.slice(0, 80),
+          // Card amounts: expenses are negative, income (refunds) are positive
+          amount:      tx.amount,
+          category:    cat,
+        });
+        count++;
+      });
+      toast({ title:`✓ Imported ${count} transactions to ${card?.name || "card"}`, description:"Visible in Credit Cards → Transactions tab" });
+      setImported(true);
+      setParseResult(null); setFileInfo(null); setSelectedIds(new Set());
+      return;
+    }
+  
+      // ── Import to Bank Account ─────────────────────────────────────────────
+  
+ 
     if (!allAsTransfer && !targetAccountId) { toast({ title: "Select an account first", variant: "destructive" }); return; }
     if (allAsTransfer && (!transferFromAcct || !transferToAcct)) { toast({ title: "Select both transfer accounts", variant: "destructive" }); return; }
 
@@ -359,7 +393,7 @@ export default function StatementImport() {
   // ── Render ───────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6">
-      <PageHeader title="Statement Import" subtitle="Drag & drop your bank XLSX / Notion statements for automatic parsing" />
+      <PageHeader title="Statement Import" subtitle="Drag & drop your bank XLSX / Import to accounts or credit cards" />
 
       {/* Supported formats */}
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
@@ -416,73 +450,105 @@ export default function StatementImport() {
               </div>
               <div><p className="text-muted-foreground">Found</p><p className="font-semibold text-primary">{txns.length} transactions</p></div>
             </div>
-            {!allAsTransfer && (
+</div>
+ 
+          {/* ── Destination selector ─────────────────────────────────────────── */}
+          <div className="border border-border rounded-xl p-3 space-y-3 bg-secondary/10">
+            <p className="text-sm font-semibold text-foreground">Import destination</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setDestType("account")}
+                className={`flex-1 py-2 rounded-lg text-xs border font-medium transition-all ${destType==="account" ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-secondary"}`}
+              >
+                🏦 Bank Account
+              </button>
+              <button
+                onClick={() => { setDestType("card"); setAllAsTransfer(false); }}
+                className={`flex-1 py-2 rounded-lg text-xs border font-medium transition-all ${destType==="card" ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-secondary"}`}
+              >
+                💳 Credit Card
+              </button>
+            </div>
+ 
+            {destType === "account" && !allAsTransfer && (
               <div className="space-y-1">
                 <Label className="text-xs">Default Import Account</Label>
                 <Select value={targetAccountId} onValueChange={setTargetAccountId}>
-                  <SelectTrigger className="w-[200px] bg-background border-border h-8 text-xs"><SelectValue placeholder="Select account" /></SelectTrigger>
+                  <SelectTrigger className="w-full bg-background border-border h-8 text-xs"><SelectValue placeholder="Select account"/></SelectTrigger>
                   <SelectContent>{accounts.map(a => <SelectItem key={a.id} value={a.id}>{a.name} ({a.currency})</SelectItem>)}</SelectContent>
                 </Select>
               </div>
             )}
-          </div>
 
           {/* ── All as Transfer ── */}
-          <div className="border border-border rounded-xl p-3 space-y-3 bg-secondary/10">
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setAllAsTransfer(v => !v)}
-                className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${allAsTransfer ? "bg-primary border-primary" : "border-border"}`}
-              >
-                {allAsTransfer && <Check className="w-3 h-3 text-white" />}
-              </button>
-              <span className="text-sm font-medium text-foreground">Import all selected as Transfers</span>
-            </div>
-            <AnimatePresence>
-              {allAsTransfer && (
-                <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
-                  <div className="flex flex-wrap gap-4 pt-1">
-                    <div className="space-y-1">
-                      <Label className="text-xs text-foreground">From Account</Label>
-                      <Select value={transferFromAcct} onValueChange={setTransferFromAcct}>
-                        <SelectTrigger className="w-[180px] bg-background border-border h-8 text-xs text-foreground">
-                          <SelectValue placeholder="From account" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {accounts.map(a => (
-                            <SelectItem key={a.id} value={a.id} className="text-foreground">{a.name}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="flex items-end pb-1">
-                      <ArrowRight className="w-4 h-4 text-muted-foreground" />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs text-foreground">To Account</Label>
-                      <Select value={transferToAcct} onValueChange={setTransferToAcct}>
-                        <SelectTrigger className="w-[180px] bg-background border-border h-8 text-xs text-foreground">
-                          <SelectValue placeholder="To account" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {accounts.map(a => (
-                            <SelectItem key={a.id} value={a.id} className="text-foreground">{a.name}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
+ 
+            {destType === "card" && (
+              <div className="space-y-1">
+                <Label className="text-xs">Import to Credit Card</Label>
+                {creditCards.length === 0 ? (
+                  <p className="text-xs text-muted-foreground bg-secondary/40 rounded-lg p-2">No credit cards added yet. Go to Credit Cards page and add one first.</p>
+                ) : (
+                  <Select value={targetCardId} onValueChange={setTargetCardId}>
+                    <SelectTrigger className="w-full bg-background border-border h-8 text-xs"><SelectValue placeholder="Select card"/></SelectTrigger>
+                    <SelectContent>
+                      {creditCards.map(c => (
+                        <SelectItem key={c.id} value={c.id}>
+                          <span className="flex items-center gap-2">
+                            <CreditCard className="w-3 h-3"/>
+                            {c.name} ···{c.last4}
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+                <p className="text-[11px] text-muted-foreground">Transactions will appear in the Credit Cards page under the selected card's Transactions tab.</p>
+              </div>
+            )}
           </div>
-
-          {/* ── Bulk Remap ── */}
-          {!allAsTransfer && (
-            <div className={`border rounded-xl p-3 space-y-3 transition-all duration-300
-              ${bulkReady ? "border-primary/50 bg-primary/5 shadow-sm shadow-primary/10" : "border-border bg-secondary/10"}`}
-            >
-              <div className="flex items-center justify-between">
+ 
+          {/* ── All as Transfer — only available for bank account dest ── */}
+          {destType === "account" && (
+            <div className="border border-border rounded-xl p-3 space-y-3 bg-secondary/10">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setAllAsTransfer(v => !v)}
+                  className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${allAsTransfer ? "bg-primary border-primary" : "border-border"}`}
+                >
+                  {allAsTransfer && <Check className="w-3 h-3 text-white"/>}
+                </button>
+                <span className="text-sm font-medium text-foreground">Import all selected as Transfers</span>
+              </div>
+              <AnimatePresence>
+                {allAsTransfer && (
+                  <motion.div initial={{ opacity:0, height:0 }} animate={{ opacity:1, height:"auto" }} exit={{ opacity:0, height:0 }} className="overflow-hidden">
+                    <div className="flex flex-wrap gap-4 pt-1">
+                      <div className="space-y-1">
+                        <Label className="text-xs text-foreground">From Account</Label>
+                        <Select value={transferFromAcct} onValueChange={setTransferFromAcct}>
+                          <SelectTrigger className="w-[180px] bg-background border-border h-8 text-xs"><SelectValue placeholder="From account"/></SelectTrigger>
+                          <SelectContent>{accounts.map(a => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}</SelectContent>
+                        </Select>
+                      </div>
+                      <div className="flex items-end pb-1"><ArrowRight className="w-4 h-4 text-muted-foreground"/></div>
+                      <div className="space-y-1">
+                        <Label className="text-xs text-foreground">To Account</Label>
+                        <Select value={transferToAcct} onValueChange={setTransferToAcct}>
+                          <SelectTrigger className="w-[180px] bg-background border-border h-8 text-xs"><SelectValue placeholder="To account"/></SelectTrigger>
+                          <SelectContent>{accounts.map(a => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}</SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
+ 
+          {/* ── Bulk Remap — only for bank account dest ── */}
+          {destType === "account" && !allAsTransfer && (
+            <div className={`border rounded-xl p-3 space-y-3 transition-all duration-300 ${bulkReady ? "border-primary/50 bg-primary/5 shadow-sm shadow-primary/10" : "border-border bg-secondary/10"}`}>
+               <div className="flex items-center justify-between">
                 <span className="text-sm font-semibold text-foreground flex items-center gap-2">
                   Bulk Remap
                   {bulkReady    && !bulkApplied && <Badge className="text-[10px] px-1.5 py-0 bg-primary/20 text-primary border border-primary/30">Ready ✦</Badge>}
@@ -601,7 +667,7 @@ export default function StatementImport() {
             <span className="col-span-2">Date</span>
             <span className="col-span-3">Description</span>
             <span className="col-span-2">Category</span>
-            <span className="col-span-2">Account</span>
+            <span className="col-span-2">{destType === "card" ? "Card" : "Account"}</span>
             <span className="col-span-1 text-right">Amount</span>
             <span className="col-span-1 text-right">Type</span>
           </div>
@@ -610,11 +676,11 @@ export default function StatementImport() {
             {displayed.map((tx, i) => {
               const sel = selectedIds.has(i);
               const cat = editCats[i] || tx.category || "Other";
-              const matchesBulk = (bulkRule.fromCategory !== "" || bulkRule.fromAccountId !== "") && (() => {
+              const matchesBulk = destType === "account" && (bulkRule.fromCategory !== "" || bulkRule.fromAccountId !== "") && (() => {
                 const acct     = editAccounts[i] || tx.extra || "";
                 const catMatch  = !bulkRule.fromCategory  || cat  === bulkRule.fromCategory;
                 const acctMatch = !bulkRule.fromAccountId || acct === bulkRule.fromAccountId ||
-                                  accounts.find(a => a.id === bulkRule.fromAccountId)?.name === acct;
+accounts.find(a => a.id === bulkRule.fromAccountId)?.name === acct;
                 return catMatch && acctMatch;
               })();
 
@@ -644,13 +710,13 @@ export default function StatementImport() {
                     </select>
                   </span>
                   <span className="col-span-2" onClick={e => e.stopPropagation()}>
-                    <select
-                      value={editAccounts[i] || targetAccountId}
-                      onChange={e => setEditAccounts(p => ({ ...p, [i]: e.target.value }))}
-                      className="w-full text-[10px] bg-secondary border-0 rounded px-1 py-0.5 text-foreground cursor-pointer"
-                    >
-                      {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-                    </select>
+                        {destType === "card" ? (
+                      <span className="text-[10px] text-violet-400 truncate block">{creditCards.find(c=>c.id===targetCardId)?.name || "—"}</span>
+                    ) : (
+                      <select value={editAccounts[i] || targetAccountId} onChange={e => setEditAccounts(p => ({...p, [i]: e.target.value}))} className="w-full text-[10px] bg-secondary border-0 rounded px-1 py-0.5 text-foreground cursor-pointer">
+                        {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                      </select>
+                    )}
                   </span>
                   <span className={`col-span-1 text-xs font-semibold text-right ${tx.amount >= 0 ? "text-primary" : "text-foreground"}`}>
                     {tx.amount >= 0 ? "+" : ""}{Math.abs(tx.amount).toFixed(2)}
