@@ -218,7 +218,16 @@ async function readXlsxRows(file: File): Promise<unknown[][]> {
         const addr = XLSX.utils.encode_cell({ r: R, c: C });
         const cell = ws[addr];
         if (!cell) { row.push(null); continue; }
-        
+        if (cell.t === "d" && cell.v instanceof Date) {
+          // ✅ FIX: use local date parts — NOT toISOString() which is UTC.
+          // UAE is UTC+4. toISOString() on a Date at 2026-02-01T00:00:00Z
+          // returns "2026-01-31" because UTC midnight = Jan 31 8pm in UAE.
+          // getFullYear/getMonth/getDate return the local calendar date.
+          const d = cell.v as Date;
+          const localStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+          row.push(localStr);
+          continue;
+        }
         if (cell.t === "n") { row.push(cell.v); continue; }
         row.push(cell.v ?? null);
       }
@@ -229,6 +238,7 @@ async function readXlsxRows(file: File): Promise<unknown[][]> {
     throw new Error("Could not read XLSX file. Make sure xlsx is installed (npm install xlsx).");
   }
 }
+ 
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface BulkRule {

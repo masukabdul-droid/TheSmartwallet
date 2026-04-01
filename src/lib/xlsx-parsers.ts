@@ -70,22 +70,37 @@ function parseDDMONYY(s: string): string | null {
 }
 
 /**
- * FIX: Convert a Date object to YYYY-MM-DD using LOCAL date parts.
+ * FIX A — Convert a Date object to YYYY-MM-DD using LOCAL date parts,
+ * not UTC. Using d.toISOString() returns UTC which is behind by the
+ * local UTC offset (e.g. UAE is UTC+4, so UTC midnight = 8pm local the
+ * previous day → toISOString gives yesterday's date).
  *
- * The old version used d.toISOString().slice(0,10) which returns UTC date.
- * In UAE (UTC+4), the XLSX library stores bank statement dates as UTC midnight
- * e.g. 2026-02-01T00:00:00.000Z — but UTC midnight = Jan 31 at 8pm UAE time,
- * so toISOString() was returning 2026-01-31 instead of 2026-02-01.
- *
- * Using getFullYear/getMonth/getDate reads the LOCAL calendar date correctly
- * regardless of the user's timezone, so UAE, BD, or any other timezone all
- * get the date that was printed on their bank statement.
+ * getFullYear/getMonth/getDate always read the local calendar date,
+ * so the date on screen matches the date printed on the bank statement.
  */
 function dateObjToStr(d: Date): string {
   const year  = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, "0");
   const day   = String(d.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+/**
+ * FIX B — Accept either a Date object OR a pre-converted "YYYY-MM-DD"
+ * string (which readXlsxRows now produces). This makes every parser
+ * resilient regardless of which layer does the conversion first.
+ */
+function toDateStr(raw: unknown): string | null {
+  if (!raw) return null;
+  // Already a clean ISO string — pass through
+  if (typeof raw === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.trim())) {
+    return raw.trim();
+  }
+  // Date object — use local parts (FIX A)
+  if (raw instanceof Date) {
+    return dateObjToStr(raw);
+  }
+  return null;
 }
 
 function stripAmt(raw: unknown): { amount: number; isCredit: boolean } | null {
@@ -103,20 +118,16 @@ function str(v: unknown): string {
 
 // ══════════════════════════════════════════════════════════════════════════
 //  PARSER 1: Sonali Bank Bangladesh (BDT)
-//  Header row: Date | Originating Branch | Transaction | Debit | Credit | Balance
-//  Data starts row after header. Dates are JS Date objects or datetime strings.
 // ══════════════════════════════════════════════════════════════════════════
 export function parseSonaliXLSX(rows: unknown[][]): ParseResult {
   const txns: ParsedTransaction[] = [];
 
-  // Find header row
   let hdr = -1;
   for (let i = 0; i < rows.length; i++) {
     if (str(rows[i][0]) === "Date" && str(rows[i][3]) === "Debit") {
       hdr = i; break;
     }
   }
-  // If header not found with strict check, try looser detection
   if (hdr < 0) {
     for (let i = 0; i < Math.min(rows.length, 30); i++) {
       const row = rows[i];
@@ -135,22 +146,21 @@ export function parseSonaliXLSX(rows: unknown[][]): ParseResult {
     if (!desc || /BROUGHT FORWARD|CARRIED FORWARD/i.test(desc)) continue;
 
     let date: string;
-    if (r0 instanceof Date) {
-      date = dateObjToStr(r0);
+    // FIX B: toDateStr handles both Date objects and pre-converted strings
+    const fromToDateStr = toDateStr(r0);
+    if (fromToDateStr) {
+      date = fromToDateStr;
     } else {
       const s = str(r0).trim();
-      // Try ISO format first: "2025-01-11 00:00:00" → "2025-01-11"
       if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
         date = s.slice(0, 10);
       } else if (/^\d{1,2}\/\d{1,2}\/\d{4}/.test(s)) {
-        // DD/MM/YYYY or MM/DD/YYYY
         const parts = s.split("/");
         date = `${parts[2]}-${parts[1].padStart(2,"0")}-${parts[0].padStart(2,"0")}`;
       } else if (/^\d{1,2}-\d{1,2}-\d{4}/.test(s)) {
         const parts = s.split("-");
         date = `${parts[2]}-${parts[1].padStart(2,"0")}-${parts[0].padStart(2,"0")}`;
       } else {
-        // Try parsing as Excel serial number (numeric)
         const num = parseFloat(s);
         if (!isNaN(num) && num > 40000) {
           const d = new Date((num - 25569) * 86400 * 1000);
@@ -184,10 +194,6 @@ export function parseSonaliXLSX(rows: unknown[][]): ParseResult {
 
 // ══════════════════════════════════════════════════════════════════════════
 //  PARSER 2: LIV / Emirates NBD Savings (AED)
-//  Format: All content in col[0], col[1] sometimes has amounts or dates.
-//  Transaction rows (page 2+): col[0]=DDMONYR, col[1]=description,
-//    amount row: col[2]=debit(float), col[3]=credit(float) | col[4]=balance+Cr
-//  For income rows (salary, IPP): amount in col[3] as float
 // ══════════════════════════════════════════════════════════════════════════
 export function parseLivSavingsXLSX(rows: unknown[][]): ParseResult {
   const txns: ParsedTransaction[] = [];
@@ -204,13 +210,11 @@ export function parseLivSavingsXLSX(rows: unknown[][]): ParseResult {
 
     const m = dateRe.exec(r0);
     if (m && row[1] !== null && row[1] !== undefined) {
-      // Page 2+ format: date in col0, description in col1
       const dateStr = parseDDMONYY(m[1]);
       if (!dateStr) { i++; continue; }
 
       const descParts: string[] = [str(row[1])];
       let j = i + 1;
-      let found = false;
 
       while (j < rows.length && j < i + 12) {
         const nrow = rows[j];
@@ -218,7 +222,6 @@ export function parseLivSavingsXLSX(rows: unknown[][]): ParseResult {
         if (nr0 && dateRe.exec(nr0)) break;
         if (/CARRIED FORWARD|BROUGHT FORWARD/i.test(nr0)) break;
 
-        // Amount row: col[2] is numeric debit, col[3] is numeric credit
         if (nrow[2] !== null && nrow[2] !== undefined) {
           const debitAmt = parseFloat(str(nrow[2]).replace(/,/g, ""));
           const creditAmt = (nrow[3] !== null && nrow[3] !== undefined) ? parseFloat(str(nrow[3]).replace(/,/g, "")) : NaN;
@@ -229,7 +232,6 @@ export function parseLivSavingsXLSX(rows: unknown[][]): ParseResult {
           } else if (!isNaN(debitAmt) && debitAmt > 0) {
             txns.push({ date: dateStr, description: desc, amount: -debitAmt, type: "expense", currency: "AED", category: autoCategory(desc) });
           }
-          found = true;
           j++;
           break;
         }
@@ -246,14 +248,9 @@ export function parseLivSavingsXLSX(rows: unknown[][]): ParseResult {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-//  PARSER 3: LIV Metals Investment (AED) - Silver/Gold Account
-//  Very short statement, same layout as LIV savings but only 1-2 transactions
+//  PARSER 3: LIV Metals Investment (AED)
 // ══════════════════════════════════════════════════════════════════════════
 export function parseLivMetalsXLSX(rows: unknown[][]): ParseResult {
-  // The metals statement has data in col[0] as text blocks
-  // Pattern: rows like "12FEB26  BANKNET TRANSFER" then next rows are description
-  // Then a row with "REFNO:..." and amount implied
-  // Since it's very compact, parse all date-tagged rows
   const txns: ParsedTransaction[] = [];
   const dateRe = /^(\d{2}[A-Z]{3}\d{2})\s+(.*)/i;
 
@@ -265,7 +262,6 @@ export function parseLivMetalsXLSX(rows: unknown[][]): ParseResult {
       const dateStr = parseDDMONYY(m[1]);
       const desc = m[2].trim();
       if (dateStr && desc && !/BROUGHT FORWARD|CARRIED FORWARD/i.test(desc)) {
-        // Collect continuation rows
         let fullDesc = desc;
         let j = i + 1;
         while (j < rows.length && j < i + 6) {
@@ -275,7 +271,6 @@ export function parseLivMetalsXLSX(rows: unknown[][]): ParseResult {
           fullDesc += " " + nr0;
           j++;
         }
-        // For metals, we note these as transfers (no easy amount in this format)
         txns.push({ date: dateStr, description: fullDesc.trim(), amount: 0, type: "income", currency: "AED", category: "Transfers", extra: "Amount not in statement" });
         i = j;
       } else { i++; }
@@ -287,13 +282,10 @@ export function parseLivMetalsXLSX(rows: unknown[][]): ParseResult {
 
 // ══════════════════════════════════════════════════════════════════════════
 //  PARSER 4: Islami Bank Bangladesh DPS / MSSA (BDT)
-//  Header: Trans Date | Particulars | (blank) | Instrument No | Withdraw | Deposit | Balance
-//  Data rows have Date objects in col[0], skip B/F rows
 // ══════════════════════════════════════════════════════════════════════════
 export function parseIBBLXLSX(rows: unknown[][]): ParseResult {
   const txns: ParsedTransaction[] = [];
 
-  // Find header row
   let hdr = -1;
   for (let i = 0; i < rows.length; i++) {
     if (str(rows[i][0]).trim() === "Trans Date") { hdr = i; break; }
@@ -302,10 +294,14 @@ export function parseIBBLXLSX(rows: unknown[][]): ParseResult {
 
   for (const row of rows.slice(hdr + 1)) {
     const r0 = row[0];
-    if (!r0 || !(r0 instanceof Date)) continue;
+    if (!r0) continue;
     const desc = str(row[1]);
     if (!desc || /^B\/F$/i.test(desc)) continue;
-    const date = dateObjToStr(r0 as Date);
+
+    // FIX B: toDateStr handles both Date objects and pre-converted strings
+    const date = toDateStr(r0);
+    if (!date) continue;
+
     const withdraw = row[4];
     const deposit = row[5];
 
@@ -327,15 +323,10 @@ export function parseIBBLXLSX(rows: unknown[][]): ParseResult {
 
 // ══════════════════════════════════════════════════════════════════════════
 //  PARSER 5: TapTap Send Remittance (AED → BDT)
-//  Header row 5 (0-indexed): ID | Date | Type | Recipient | Phone | Country |
-//    Amount Charged | Sending Fee | Funding | Bonus | Total Sent |
-//    Total Sent (Converted) | Exchange Rate
-//  All transfers are expenses (money sent from AED)
 // ══════════════════════════════════════════════════════════════════════════
 export function parseTapTapXLSX(rows: unknown[][]): ParseResult {
   const txns: ParsedTransaction[] = [];
 
-  // Find header row
   let hdr = -1;
   for (let i = 0; i < rows.length; i++) {
     if (str(rows[i][0]) === "ID" && str(rows[i][1]) === "Date") { hdr = i; break; }
@@ -344,15 +335,15 @@ export function parseTapTapXLSX(rows: unknown[][]): ParseResult {
 
   for (const row of rows.slice(hdr + 1)) {
     if (!row[0]) continue;
-    const rawDate = str(row[1]).replace(/\n/g, " ").split(" ")[0].trim(); // "2024-04-19"
+    const rawDate = str(row[1]).replace(/\n/g, " ").split(" ")[0].trim();
     const date = rawDate.length === 10 && /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : rawDate.slice(0, 10);
     if (!date || !/^\d{4}/.test(date)) continue;
 
     const recipient = str(row[3]);
     const country = str(row[5]);
     const amtCharged = str(row[6]).replace(/AED\s*/i, "").replace(/\n/g, "").trim();
-    const converted = str(row[11]).replace(/\n/g, " ").trim();  // e.g. "BDT 5,000.00"
-    const fxRate = str(row[12]).replace(/\n/g, " ").trim();     // e.g. "AED 1 = BDT 31.25"
+    const converted = str(row[11]).replace(/\n/g, " ").trim();
+    const fxRate = str(row[12]).replace(/\n/g, " ").trim();
 
     const amt = parseFloat(amtCharged.replace(/,/g, ""));
     if (isNaN(amt) || amt <= 0) continue;
@@ -368,18 +359,25 @@ export function parseTapTapXLSX(rows: unknown[][]): ParseResult {
 
 // ══════════════════════════════════════════════════════════════════════════
 //  PARSER 6: LIV Credit Card (AED) – 5381 XXXX XXXX 1901
-//  Layout: col[0]=transaction date (Date), col[3]=posting date (Date),
-//          col[8]=description (string), col[20]=amount (string or number)
-//  "CR" suffix = credit/payment = positive (income)
-//  No "CR" = purchase = negative (expense)
+//  Layout: col[0]=transaction date, col[3]=posting date,
+//          col[8]=description, col[20]=amount (string, may end in "CR")
+//
+//  FIX: col[0] used to be checked with `instanceof Date` — but readXlsxRows
+//  now converts Date cells to local "YYYY-MM-DD" strings before passing rows
+//  to parsers. The guard is updated to accept EITHER a Date object OR a
+//  YYYY-MM-DD string so the parser works both ways.
 // ══════════════════════════════════════════════════════════════════════════
 export function parseLivCreditCardXLSX(rows: unknown[][]): ParseResult {
   const txns: ParsedTransaction[] = [];
 
   for (const row of rows) {
     const r0 = row[0];
-    if (!(r0 instanceof Date)) continue;
+    if (!r0) continue;
     if (row.length < 21) continue;
+
+    // FIX B: accept Date object OR pre-converted "YYYY-MM-DD" string
+    const date = toDateStr(r0);
+    if (!date) continue;
 
     const desc = str(row[8]);
     if (!desc) continue;
@@ -392,9 +390,6 @@ export function parseLivCreditCardXLSX(rows: unknown[][]): ParseResult {
     const amt = parseFloat(amtStr.replace(/CR$/i, "").trim());
     if (isNaN(amt) || amt === 0) continue;
 
-    // FIX: use dateObjToStr (local date parts) — previously this was calling
-    // d.toISOString() which gave UTC date, shifting UAE dates back by 1 day.
-    const date = dateObjToStr(r0 as Date);
     const amount = isCredit ? Math.abs(amt) : -Math.abs(amt);
     const type = isCredit ? "income" : "expense";
 
@@ -408,7 +403,6 @@ export function parseLivCreditCardXLSX(rows: unknown[][]): ParseResult {
 //  AUTO-DETECT: Fingerprint rows to choose parser
 // ══════════════════════════════════════════════════════════════════════════
 export function autoDetectAndParse(rows: unknown[][]): ParseResult {
-  // Flatten first 40 rows into one string for fingerprinting
   const sample = rows.slice(0, 40).map(r => r.map(c => str(c)).join(" ")).join(" ").toLowerCase();
 
   if (/taptap.*send|taptap send activity/i.test(sample)) {
@@ -430,7 +424,6 @@ export function autoDetectAndParse(rows: unknown[][]): ParseResult {
     return parseLivSavingsXLSX(rows);
   }
 
-  // Last resort: try each parser
   for (const fn of [parseSonaliXLSX, parseLivSavingsXLSX, parseTapTapXLSX, parseIBBLXLSX, parseLivCreditCardXLSX]) {
     const r = fn(rows);
     if (r.transactions.length > 0) return r;
