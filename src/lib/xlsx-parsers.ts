@@ -69,8 +69,23 @@ function parseDDMONYY(s: string): string | null {
   return `${yr}-${String(mon).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
 }
 
+/**
+ * FIX: Convert a Date object to YYYY-MM-DD using LOCAL date parts.
+ *
+ * The old version used d.toISOString().slice(0,10) which returns UTC date.
+ * In UAE (UTC+4), the XLSX library stores bank statement dates as UTC midnight
+ * e.g. 2026-02-01T00:00:00.000Z — but UTC midnight = Jan 31 at 8pm UAE time,
+ * so toISOString() was returning 2026-01-31 instead of 2026-02-01.
+ *
+ * Using getFullYear/getMonth/getDate reads the LOCAL calendar date correctly
+ * regardless of the user's timezone, so UAE, BD, or any other timezone all
+ * get the date that was printed on their bank statement.
+ */
 function dateObjToStr(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  const year  = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day   = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function stripAmt(raw: unknown): { amount: number; isCredit: boolean } | null {
@@ -377,6 +392,8 @@ export function parseLivCreditCardXLSX(rows: unknown[][]): ParseResult {
     const amt = parseFloat(amtStr.replace(/CR$/i, "").trim());
     if (isNaN(amt) || amt === 0) continue;
 
+    // FIX: use dateObjToStr (local date parts) — previously this was calling
+    // d.toISOString() which gave UTC date, shifting UAE dates back by 1 day.
     const date = dateObjToStr(r0 as Date);
     const amount = isCredit ? Math.abs(amt) : -Math.abs(amt);
     const type = isCredit ? "income" : "expense";

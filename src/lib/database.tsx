@@ -1017,7 +1017,7 @@ export function DatabaseProvider({ children, userId }: { children: ReactNode; us
   }, [userId]);
 
   // Computed account balance: openingBalance + sum of all transactions
-  const getAccountBalance = (id: string): number => {
+   const getAccountBalance = (id: string): number => {
     const acct = accounts.find(a => a.id === id);
     if (!acct) return 0;
     const txTotal = transactions
@@ -1039,7 +1039,6 @@ export function DatabaseProvider({ children, userId }: { children: ReactNode; us
     const cashEntriesTotal = cashEntries
       .filter(ce => ce.linkedAccountId === id)
       .reduce((sum, ce) => sum + ce.amount, 0);
- 
     return (acct.openingBalance || 0) + txTotal - transferOut + transferIn + cashEntriesTotal;
   };
 
@@ -1124,20 +1123,17 @@ deleteTransaction: id => {
 },
 
 
-deleteCardTransaction: (cardId, txId) => setCreditCards(p => p.map(c => {
-  if (c.id !== cardId) return c;
-
-  // ← NEW: also remove the mirrored global transaction
-  const cardTx = c.transactions.find(t => t.id === txId);
-  if (cardTx?.linkedTransactionId) {
-    setTransactionsRaw(prev => prev.filter(t => t.id !== cardTx.linkedTransactionId));
-    sbDelete("transactions", cardTx.linkedTransactionId);
-  }
-
-  const remaining = c.transactions.filter(t => t.id !== txId);
-  const newBalance = remaining.reduce((s, t) => s + t.amount, 0);
-  return { ...c, transactions: remaining, balance: newBalance };
-})),
+   deleteCardTransaction: (cardId, txId) => {
+      setCreditCards(p => p.map(c => {
+        if (c.id !== cardId) return c;
+        const remaining  = c.transactions.filter(t => t.id !== txId);
+        // Balance = sum of all charges (negatives) + payments (positives), negated
+        // A card with AED 500 spent has transactions sum of -500, balance = 500
+        const txSum      = remaining.reduce((s, t) => s + t.amount, 0);
+        const newBalance = Math.max(0, -txSum);
+        return { ...c, transactions: remaining, balance: newBalance };
+      }));
+    },
 
 
     budgets,
@@ -1300,12 +1296,7 @@ deleteCardTransaction: (cardId, txId) => setCreditCards(p => p.map(c => {
       const newBalance = updated.reduce((s,t) => s + t.amount, 0);
       return { ...c, transactions: updated, balance: newBalance };
     })),
-    deleteCardTransaction: (cardId, txId) => setCreditCards(p => p.map(c => {
-      if (c.id!==cardId) return c;
-      const remaining = c.transactions.filter(t => t.id!==txId);
-      const newBalance = remaining.reduce((s,t) => s + t.amount, 0);
-      return { ...c, transactions: remaining, balance: newBalance };
-    })),
+   
     updateCardBalance: (cardId, balance) => setCreditCards(p => p.map(c => c.id===cardId ? { ...c, balance } : c)),
     addCardRepayment: (repayment) => {
       const newId = uid();
@@ -1324,27 +1315,29 @@ deleteCardTransaction: (cardId, txId) => setCreditCards(p => p.map(c => {
       }
     },
 
-deleteCardRepayment: (cardId, repaymentId) => {
-  const card = creditCards.find(c => c.id === cardId);
-  const rep = (card?.repayments || []).find(r => r.id === repaymentId);
-
-  // ← NEW: reverse the expense transaction created when repayment was added
-  if (rep?.sourceAccountId) {
-    setTransactionsRaw(prev => prev.filter(t =>
-      !(t.category === "Credit Card Payment" &&
-        t.accountId === rep.sourceAccountId &&
-        t.amount === -rep.amount &&
-        t.date === rep.date)
-    ));
-  }
-
-  setCreditCards(p => p.map(c => {
-    if (c.id !== cardId) return c;
-    const remaining = (c.repayments || []).filter(r => r.id !== repaymentId);
-    const newBalance = rep ? c.balance - rep.amount : c.balance;
-    return { ...c, repayments: remaining, balance: newBalance };
-  }));
-},
+    deleteCardRepayment: (cardId, repaymentId) => {
+      const card = creditCards.find(c => c.id === cardId);
+      const rep  = (card?.repayments || []).find(r => r.id === repaymentId);
+      // Remove the matching account expense transaction
+      if (rep?.sourceAccountId) {
+        setTransactionsRaw(prev => {
+          const idx = [...prev].reverse().findIndex(t =>
+            t.accountId === rep.sourceAccountId &&
+            t.amount    === -rep.amount &&
+            t.category  === "Credit Card Payment"
+          );
+          if (idx === -1) return prev;
+          const realIdx = prev.length - 1 - idx;
+          return prev.filter((_, i) => i !== realIdx);
+        });
+      }
+      setCreditCards(p => p.map(c => {
+        if (c.id !== cardId) return c;
+        const remaining   = (c.repayments || []).filter(r => r.id !== repaymentId);
+        const newBalance  = rep ? c.balance - rep.amount : c.balance;
+        return { ...c, repayments: remaining, balance: newBalance };
+      }));
+    },
 
     companies,
     addCompany: c => setCompanies(p => [...p, { ...c, id: uid() }]),
@@ -1490,21 +1483,58 @@ deleteCardRepayment: (cardId, repaymentId) => {
     },
 
     transfers,
-    addTransfer: t => {
-      setTransfers(p => [{ ...t, id: uid() }, ...p]);
-      // If target is a credit card, reduce its balance (repay)
+        addTransfer: t => {
+      const newId = uid();
+      setTransfers(p => [{ ...t, id: newId }, ...p]);
       if (t.toCreditCardId) {
-        setCreditCards(p => p.map(c => c.id===t.toCreditCardId ? {
-          ...c, balance: c.balance + t.amountReceived,
-          repayments: [...(c.repayments||[]), { id: uid(), cardId: t.toCreditCardId!, date: t.date, amount: t.amountReceived, method: "bank_account" as const, sourceAccountId: t.fromAccountId, notes: `Transfer: ${t.notes||""}` }]
+        const repId = uid();
+        setCreditCards(p => p.map(c => c.id === t.toCreditCardId ? {
+          ...c,
+          balance: c.balance + t.amountReceived,
+          repayments: [...(c.repayments || []), {
+            id: repId,
+            cardId: t.toCreditCardId!,
+            date: t.date,
+            amount: t.amountReceived,
+            method: "bank_account" as const,
+            sourceAccountId: t.fromAccountId,
+            notes: t.notes || "",
+            _transferId: newId,   // tag so deleteTransfer can clean it up
+          } as any],
         } : c));
+        // FIX: write EXPENSE (outflow), not income — money LEFT the account
         if (t.fromAccountId) {
-          setTransactions(prev => [{ id: uid(), name: `CC Payment - Transfer`, amount: -t.amountSent, type: "expense" as const, category: "Credit Card Payment", accountId: t.fromAccountId, date: t.date, notes: t.notes }, ...prev]);
+          setTransactions(prev => [{
+            id: uid(),
+            name: `CC Payment - Transfer`,
+            amount: -t.amountSent,
+            type: "expense" as const,
+            category: "Credit Card Payment",
+            accountId: t.fromAccountId,
+            date: t.date,
+            notes: t.notes,
+            _transferId: newId,   // tag so deleteTransfer can clean it up
+          } as any, ...prev]);
         }
       }
     },
     updateTransfer: (id, u) => setTransfers(p => p.map(t => t.id===id ? { ...t, ...u } : t)),
-    deleteTransfer: id => { sbDelete("transfers", id); setTransfersRaw(p => p.filter(t => t.id!==id)); },
+        deleteTransfer: id => {
+      const transfer = transfers.find(t => t.id === id);
+      if (transfer?.toCreditCardId) {
+        // Reverse the card repayment entry
+        setCreditCards(p => p.map(c => {
+          if (c.id !== transfer.toCreditCardId) return c;
+          const rep = (c.repayments || []).find((r: any) => r._transferId === id);
+          const remaining = (c.repayments || []).filter((r: any) => r._transferId !== id);
+          return { ...c, repayments: remaining, balance: rep ? c.balance - rep.amount : c.balance };
+        }));
+        // Reverse the account expense transaction
+        setTransactionsRaw(p => p.filter((t: any) => t._transferId !== id));
+      }
+      sbDelete("transfers", id);
+      setTransfersRaw(p => p.filter(t => t.id !== id));
+    },
     transferModes, addTransferMode: m => setTransferModes(p => [...new Set([...p, m])]),
     updateTransferMode: (old, nw) => setTransferModes(p => p.map(m => m===old ? nw : m)),
     deleteTransferMode: m => setTransferModes(p => p.filter(x => x!==m)),

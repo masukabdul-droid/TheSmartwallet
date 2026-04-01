@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Check, AlertCircle, Upload, FileSpreadsheet, Import, ChevronDown, ChevronUp, Loader2, ArrowRight, RefreshCw, CreditCard } from "lucide-react";
+import { Check, AlertCircle, Upload, FileSpreadsheet, Import, ChevronDown, ChevronUp, Loader2, ArrowRight, RefreshCw, CreditCard, Calendar } from "lucide-react";
 import { useDB } from "@/lib/database";
 import { autoDetectAndParse, type ParsedTransaction } from "@/lib/xlsx-parsers";
 import { useToast } from "@/hooks/use-toast";
@@ -60,7 +60,54 @@ function inferCurrencyFromAccount(accountName: string): string {
   return "AED"; // sensible default for UAE-based usage
 }
 
-function parseNotionRows(rows: unknown[][]): ParsedTransaction[] {
+// ─── NEW: Date format types ───────────────────────────────────────────────────
+// Added to fix the wrong-date bug: "01-02-2026" was parsed as Jan 2 (MM-DD)
+// but the LIV/Mashreq statement uses DD-MM-YYYY meaning Feb 1.
+type DateFormatId = "auto" | "dd-mm-yyyy" | "mm-dd-yyyy" | "dd-mm-yy" | "mm-dd-yy" | "yy-mm-dd" | "yyyy-mm-dd";
+
+const DATE_FORMAT_OPTIONS: { value: DateFormatId; label: string; example: string }[] = [
+  { value: "auto",       label: "Auto-detect",  example: "tries all patterns" },
+  { value: "dd-mm-yyyy", label: "DD-MM-YYYY",   example: "01-02-2026 → 1 Feb" },
+  { value: "mm-dd-yyyy", label: "MM-DD-YYYY",   example: "01-02-2026 → 2 Jan" },
+  { value: "dd-mm-yy",   label: "DD-MM-YY",     example: "01-02-26 → 1 Feb 2026" },
+  { value: "mm-dd-yy",   label: "MM-DD-YY",     example: "01-02-26 → 2 Jan 2026" },
+  { value: "yy-mm-dd",   label: "YY-MM-DD",     example: "26-02-01 → 1 Feb 2026" },
+  { value: "yyyy-mm-dd", label: "YYYY-MM-DD",   example: "2026-02-01 → 1 Feb (ISO)" },
+];
+
+/**
+ * Parse a raw cell value into YYYY-MM-DD using the user-selected format.
+ * Only called when format !== "auto" to override dates that the bank parser
+ * already detected. ISO dates (YYYY-MM-DD) are always passed through unchanged.
+ */
+function applyDateFormat(raw: unknown, fmt: DateFormatId): string {
+  if (!raw) return new Date().toISOString().slice(0, 10);
+  if (raw instanceof Date) return raw.toISOString().slice(0, 10);
+  const s = String(raw).trim();
+  // Already ISO — never touch it
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const m = s.match(/(\d+)[\/\-\.](\d+)[\/\-\.](\d+)/);
+  if (!m) {
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? s : d.toISOString().slice(0, 10);
+  }
+  const [, a, b, c] = m;
+  const n = (x: string) => parseInt(x, 10);
+  const yr = (x: string) => x.length === 2 ? `20${x}` : x;
+  let day: number, month: number, year: string;
+
+  if      (fmt === "dd-mm-yyyy") { day = n(a); month = n(b); year = c;      }
+  else if (fmt === "mm-dd-yyyy") { month = n(a); day = n(b); year = c;      }
+  else if (fmt === "dd-mm-yy")   { day = n(a); month = n(b); year = yr(c);  }
+  else if (fmt === "mm-dd-yy")   { month = n(a); day = n(b); year = yr(c);  }
+  else if (fmt === "yy-mm-dd")   { year = yr(a); month = n(b); day = n(c);  }
+  else /* yyyy-mm-dd */          { year = a; month = n(b); day = n(c);       }
+
+  if (!month || !day || !year) return s;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function parseNotionRows(rows: unknown[][], dateFormat: DateFormatId = "auto"): ParsedTransaction[] {
   if (rows.length < 2) return [];
   const header = (rows[0] as unknown[]).map(h => String(h ?? "").toLowerCase().trim());
 
@@ -74,19 +121,19 @@ function parseNotionRows(rows: unknown[][]): ParsedTransaction[] {
 
   const dateCol    = col(["date"]);
   const descCol    = col(["expenses", "description", "desc", "name", "title"]);
-  // Two separate amount columns — pick whichever is filled per row
-  // "Total Amount" = original currency; "Total Amount (BD)" = BDT converted
   const amtColMain = header.findIndex(h => (h === "total amount" || h === "total amount (aed)" || h === "amount") && !h.includes("(bd)") && !h.includes("(bdt)"));
   const amtColBD   = header.findIndex(h => h.includes("total amount") && (h.includes("(bd)") || h.includes("(bdt)")));
   const catCol     = col(["categories", "category"]);
   const acctCol    = col(["accounts", "account", "payment method"]);
-  const currCol    = col(["currency"]); // explicit currency column if present
+  const currCol    = col(["currency"]);
 
   const parseNotionDate = (raw: unknown): string => {
     if (!raw) return new Date().toISOString().split("T")[0];
     if (raw instanceof Date) return raw.toISOString().split("T")[0];
     const s = String(raw).trim();
-    // dd-mm-yyyy  or  dd/mm/yyyy
+    // If user chose a specific format, apply it
+    if (dateFormat !== "auto") return applyDateFormat(raw, dateFormat);
+    // Original auto logic: dd-mm-yyyy / dd/mm/yyyy
     const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
     if (m) {
       const y = m[3].length === 2 ? `20${m[3]}` : m[3];
@@ -116,23 +163,16 @@ function parseNotionRows(rows: unknown[][]): ParsedTransaction[] {
     const row  = rows[r] as unknown[];
     const desc = descCol >= 0 ? String(row[descCol] ?? "").trim() : "";
 
-    // Pick whichever amount column is filled: prefer Main (original currency),
-    // fall back to BD/BDT (converted). Both empty → skip the row.
     const rawMain = amtColMain >= 0 ? row[amtColMain] : null;
     const rawBD   = amtColBD   >= 0 ? row[amtColBD]   : null;
     const isFilled = (v: unknown) => v !== null && v !== undefined && v !== "" && v !== 0;
     const useMain = isFilled(rawMain);
     const rawAmt  = useMain ? rawMain : (isFilled(rawBD) ? rawBD : null);
 
-    if (!desc && !isFilled(rawAmt)) continue; // skip blank rows
+    if (!desc && !isFilled(rawAmt)) continue;
 
     const accountName = acctCol >= 0 ? cleanNotionName(row[acctCol]) : "";
 
-    // Currency priority:
-    //   1. Explicit "Currency" column in the sheet
-    //   2. If using the BD column → BDT
-    //   3. Infer from account name keyword map
-    //   4. Default AED
     let currency = "AED";
     if (currCol >= 0 && row[currCol]) {
       currency = String(row[currCol]).trim().toUpperCase();
@@ -147,7 +187,7 @@ function parseNotionRows(rows: unknown[][]): ParsedTransaction[] {
     txns.push({
       date:        dateCol >= 0 ? parseNotionDate(row[dateCol]) : new Date().toISOString().split("T")[0],
       description: desc || "Unknown",
-      amount:      amount > 0 ? -amount : amount, // Notion sheet stores expenses as positive → negate
+      amount:      amount > 0 ? -amount : amount,
       type:        "expense",
       category:    catCol  >= 0 ? cleanNotionName(row[catCol]) : "Other",
       currency,
@@ -178,7 +218,7 @@ async function readXlsxRows(file: File): Promise<unknown[][]> {
         const addr = XLSX.utils.encode_cell({ r: R, c: C });
         const cell = ws[addr];
         if (!cell) { row.push(null); continue; }
-        if (cell.t === "d" && cell.v instanceof Date) { row.push(cell.v); continue; }
+        
         if (cell.t === "n") { row.push(cell.v); continue; }
         row.push(cell.v ?? null);
       }
@@ -191,47 +231,53 @@ async function readXlsxRows(file: File): Promise<unknown[][]> {
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-// ─── Component ────────────────────────────────────────────────────────────────
+interface BulkRule {
+  fromCategory:  string;
+  fromAccountId: string;
+  toCategory:    string;
+  toAccountId:   string;
+}
 
-interface BulkRule { fromCategory: string; fromAccountId: string; toCategory: string; toAccountId: string; }
- 
-// ─── Destination type ─────────────────────────────────────────────────────────
-// "account" = bank account, "card" = credit card
+// NEW: destination type for import (bank account or credit card)
 type DestType = "account" | "card";
- 
 
+// ─── Component ────────────────────────────────────────────────────────────────
 export default function StatementImport() {
+  // NEW: added creditCards and addCardTransaction alongside existing destructures
   const { batchAddTransactions, accounts, creditCards, addCardTransaction } = useDB();
   const { toast } = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
+  // NEW: store last processed file so re-parsing on format change doesn't need re-upload
+  const lastFileRef = useRef<File | null>(null);
+  // NEW: store raw rows so format changes can re-parse without re-reading file
+  const lastRowsRef = useRef<unknown[][] | null>(null);
 
   const [dragging,        setDragging]        = useState(false);
   const [loading,         setLoading]         = useState(false);
   const [fileInfo,        setFileInfo]        = useState<{ name: string; size: string } | null>(null);
   const [parseResult,     setParseResult]     = useState<{ transactions: ParsedTransaction[]; bankName: string; accountType: string; currency: string; error?: string } | null>(null);
   const [selectedIds,     setSelectedIds]     = useState<Set<number>>(new Set());
-   
-  // ── Destination: account or credit card ──────────────────────────────────
-  const [destType,        setDestType]        = useState<DestType>("account");
-  
   const [targetAccountId, setTargetAccountId] = useState(accounts[0]?.id ?? "");
-  const [targetCardId,    setTargetCardId]    = useState(creditCards[0]?.id ?? "");
-
   const [imported,        setImported]        = useState(false);
   const [showAll,         setShowAll]         = useState(false);
   const [editCats,        setEditCats]        = useState<Record<number, string>>({});
   const [editAccounts,    setEditAccounts]    = useState<Record<number, string>>({});
 
-  // All as Transfer
+  // All as Transfer — unchanged
   const [allAsTransfer,    setAllAsTransfer]    = useState(false);
   const [transferFromAcct, setTransferFromAcct] = useState("");
   const [transferToAcct,   setTransferToAcct]   = useState("");
 
-  // Bulk rule
-  const [bulkRule,  setBulkRule]  = useState<BulkRule>({ fromCategory: "", fromAccountId: "", toCategory: "", toAccountId: "" });
+  // Bulk rule — unchanged
+  const [bulkRule,    setBulkRule]    = useState<BulkRule>({ fromCategory: "", fromAccountId: "", toCategory: "", toAccountId: "" });
   const [bulkApplied, setBulkApplied] = useState(false);
 
-  const txns     = parseResult?.transactions ?? [];
+  // NEW: date format and destination type state
+  const [dateFormat,    setDateFormat]    = useState<DateFormatId>("auto");
+  const [destType,      setDestType]      = useState<DestType>("account");
+  const [targetCardId,  setTargetCardId]  = useState(creditCards[0]?.id ?? "");
+
+  const txns      = parseResult?.transactions ?? [];
   const displayed = showAll ? txns : txns.slice(0, 30);
 
   const presentCategories   = Array.from(new Set(txns.map((t, i) => editCats[i]    || t.category || "Other")));
@@ -243,7 +289,7 @@ export default function StatementImport() {
     bulkRule.toCategory    !== "" &&
     bulkRule.toAccountId   !== "";
 
-  // Auto-select rows matching the bulk "from" filters
+  // Auto-select rows matching the bulk "from" filters — unchanged
   useEffect(() => {
     if (!bulkRule.fromCategory && !bulkRule.fromAccountId) return;
     setSelectedIds(prev => {
@@ -288,7 +334,47 @@ export default function StatementImport() {
     setBulkApplied(false);
   };
 
-  // ── File processing ──────────────────────────────────────────────────────
+  // ── NEW: apply date format to an already-parsed result set ───────────────
+  // This runs without re-reading the file — fast, using cached rows.
+  const applyFormatToRows = useCallback((rows: unknown[][], fmt: DateFormatId) => {
+    if (fmt === "auto") return; // auto already handled inside parsers
+
+    // For Notion sheets we re-parse entirely (cheap, all in-memory)
+    if (isNotionSheet(rows)) {
+      const notionTxns = parseNotionRows(rows, fmt);
+      setParseResult(prev => prev ? { ...prev, transactions: notionTxns } : prev);
+      setSelectedIds(new Set(notionTxns.map((_, i) => i)));
+      return;
+    }
+
+    // For bank statements: find the raw date column by header keywords,
+    // then re-apply the user format to each transaction's raw cell value.
+    // We do NOT re-run autoDetectAndParse (too slow / resets categories).
+    const header = (rows[0] as unknown[]).map(h => String(h ?? "").toLowerCase().trim());
+    // Look for columns whose header contains "date" or "tran" (transaction date)
+    // but NOT "posting" — we want the transaction date, not the bank-posting date.
+    const dateColIdx = header.findIndex(h =>
+      (h.includes("tran") && h.includes("date")) ||
+      h === "date" ||
+      h === "value date" ||
+      h === "transaction date"
+    );
+    if (dateColIdx < 0) return; // can't find date column — leave as-is
+
+    setParseResult(prev => {
+      if (!prev) return prev;
+      const updated = prev.transactions.map((tx, ri) => {
+        const rawRow = rows[ri + 1] as unknown[] | undefined;
+        if (!rawRow) return tx;
+        const rawCell = rawRow[dateColIdx];
+        if (!rawCell) return tx;
+        return { ...tx, date: applyDateFormat(rawCell, fmt) };
+      });
+      return { ...prev, transactions: updated };
+    });
+  }, []);
+
+  // ── File processing — original logic, extended with format + row cache ───
   const processFile = useCallback(async (file: File) => {
     if (!file.name.match(/\.(xlsx|xls|csv)$/i)) {
       toast({ title: "Invalid file type", description: "Please upload an .xlsx or .csv file", variant: "destructive" }); return;
@@ -299,58 +385,89 @@ export default function StatementImport() {
     setBulkRule({ fromCategory: "", fromAccountId: "", toCategory: "", toAccountId: "" });
     try {
       const rows = await readXlsxRows(file);
+      lastRowsRef.current = rows; // cache for format-change re-processing
+
       if (isNotionSheet(rows)) {
-        const notionTxns = parseNotionRows(rows);
+        const notionTxns = parseNotionRows(rows, dateFormat);
         setParseResult({ transactions: notionTxns, bankName: "Notion Export", accountType: "Expense Sheet", currency: "AED" });
         setSelectedIds(new Set(notionTxns.map((_, i) => i)));
         toast({ title: "✓ Notion Export", description: `${notionTxns.length} transactions parsed` });
         return;
       }
       const result = autoDetectAndParse(rows);
+      // Apply user date format on top of auto-detected dates
+      if (dateFormat !== "auto") {
+        applyFormatToRows(rows, dateFormat);
+        // applyFormatToRows uses setParseResult, but we haven't called it yet —
+        // so set the base result first, then the format overlay will follow.
+      }
       setParseResult(result);
       setSelectedIds(new Set(result.transactions.map((_, i) => i)));
+      // Now override dates if format is set
+      if (dateFormat !== "auto") {
+        applyFormatToRows(rows, dateFormat);
+      }
       toast({ title: `✓ ${result.bankName}`, description: `${result.transactions.length} transactions parsed` });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Unknown error";
       setParseResult({ transactions: [], bankName: "Error", accountType: "", currency: "AED", error: msg });
-      toast({ title: "Parse error", description: msg, variant: "destructive" });
+      toast({ title: "Parse error", description: `${msg}. Check the file format or try a different date format setting.`, variant: "destructive" });
     } finally { setLoading(false); }
-  }, [toast]);
+  }, [toast, dateFormat, applyFormatToRows]);
 
-  const onDrop       = (e: React.DragEvent) => { e.preventDefault(); setDragging(false); if (e.dataTransfer.files[0]) processFile(e.dataTransfer.files[0]); };
-  const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => { if (e.target.files?.[0]) processFile(e.target.files[0]); };
+  const onDrop       = (e: React.DragEvent) => {
+    e.preventDefault(); setDragging(false);
+    if (e.dataTransfer.files[0]) { lastFileRef.current = e.dataTransfer.files[0]; processFile(e.dataTransfer.files[0]); }
+  };
+  const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files?.[0]) { lastFileRef.current = e.target.files[0]; processFile(e.target.files[0]); }
+  };
   const toggleSelect = (i: number) => { const s = new Set(selectedIds); s.has(i) ? s.delete(i) : s.add(i); setSelectedIds(s); };
   const toggleAll    = () => selectedIds.size === txns.length ? setSelectedIds(new Set()) : setSelectedIds(new Set(txns.map((_, i) => i)));
 
-  // ── Import ───────────────────────────────────────────────────────────────
-  
+  // NEW: when user changes the date format while a file is already loaded,
+  // re-apply it instantly without re-reading from disk.
+  const handleDateFormatChange = (fmt: DateFormatId) => {
+    setDateFormat(fmt);
+    if (lastRowsRef.current && parseResult) {
+      if (fmt === "auto") {
+        // Re-process the file fully to get back the auto-detected dates
+        if (lastFileRef.current) processFile(lastFileRef.current);
+      } else {
+        applyFormatToRows(lastRowsRef.current, fmt);
+      }
+    }
+  };
+
+  // ── Import — original logic + NEW credit card branch ─────────────────────
   const handleImport = () => {
-    // ── Import to Credit Card ──────────────────────────────────────────────
+    // NEW: credit card import path
     if (destType === "card") {
-      if (!targetCardId) { toast({ title:"Select a credit card first", variant:"destructive" }); return; }
+      if (!targetCardId) {
+        toast({ title: "Select a credit card first", variant: "destructive" }); return;
+      }
       const card = creditCards.find(c => c.id === targetCardId);
       let count = 0;
       txns.forEach((tx, i) => {
         if (!selectedIds.has(i)) return;
-        const cat = editCats[i] || tx.category || "Other";
         addCardTransaction(targetCardId, {
           date:        tx.date,
           description: tx.description.slice(0, 80),
-          // Card amounts: expenses are negative, income (refunds) are positive
-          amount:      tx.amount,
-          category:    cat,
+          amount:      tx.amount,           // negative = charge, positive = credit/refund
+          category:    editCats[i] || tx.category || "Other",
         });
         count++;
       });
-      toast({ title:`✓ Imported ${count} transactions to ${card?.name || "card"}`, description:"Visible in Credit Cards → Transactions tab" });
       setImported(true);
+      toast({
+        title: `✓ Imported ${count} transactions to ${card?.name || "card"}`,
+        description: "Visible in Credit Cards → Transactions tab",
+      });
       setParseResult(null); setFileInfo(null); setSelectedIds(new Set());
       return;
     }
-  
-      // ── Import to Bank Account ─────────────────────────────────────────────
-  
- 
+
+    // Original bank account import — unchanged
     if (!allAsTransfer && !targetAccountId) { toast({ title: "Select an account first", variant: "destructive" }); return; }
     if (allAsTransfer && (!transferFromAcct || !transferToAcct)) { toast({ title: "Select both transfer accounts", variant: "destructive" }); return; }
 
@@ -393,7 +510,7 @@ export default function StatementImport() {
   // ── Render ───────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6">
-      <PageHeader title="Statement Import" subtitle="Drag & drop your bank XLSX / Import to accounts or credit cards" />
+      <PageHeader title="Statement Import" subtitle="Drag & drop your bank XLSX / Notion statements for automatic parsing" />
 
       {/* Supported formats */}
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
@@ -413,7 +530,35 @@ export default function StatementImport() {
         ))}
       </div>
 
-      {/* Drop zone */}
+      {/* NEW: Date format picker — sits above the drop zone so user sets it before uploading */}
+      <div className="glass-card p-3 flex flex-wrap items-center gap-4">
+        <div className="flex items-center gap-2 text-sm font-medium text-foreground shrink-0">
+          <Calendar className="w-4 h-4 text-primary" />
+          Date format
+        </div>
+        <Select value={dateFormat} onValueChange={v => handleDateFormatChange(v as DateFormatId)}>
+          <SelectTrigger className="w-[200px] bg-background border-border h-8 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {DATE_FORMAT_OPTIONS.map(opt => (
+              <SelectItem key={opt.value} value={opt.value}>
+                <span className="font-medium">{opt.label}</span>
+                <span className="text-muted-foreground ml-2 text-[10px]">— {opt.example}</span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {dateFormat !== "auto" && (
+          <p className="text-[11px] text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-1 rounded-md">
+            Active: <strong>{dateFormat.toUpperCase()}</strong>
+            {dateFormat === "dd-mm-yyyy" && " — 01-02-2026 reads as 1 Feb 2026"}
+            {dateFormat === "mm-dd-yyyy" && " — 01-02-2026 reads as 2 Jan 2026"}
+          </p>
+        )}
+      </div>
+
+      {/* Drop zone — unchanged */}
       <motion.div
         initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
         onDragOver={e => { e.preventDefault(); setDragging(true); }}
@@ -436,7 +581,7 @@ export default function StatementImport() {
       {parseResult && !parseResult.error && (
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="glass-card p-4 space-y-4">
 
-          {/* Stats row */}
+          {/* Stats row — unchanged, except default account selector only shown for account dest */}
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-5 flex-wrap text-xs">
               <div><p className="text-muted-foreground">Bank / Source</p><p className="font-semibold text-foreground">{parseResult.bankName}</p></div>
@@ -450,64 +595,58 @@ export default function StatementImport() {
               </div>
               <div><p className="text-muted-foreground">Found</p><p className="font-semibold text-primary">{txns.length} transactions</p></div>
             </div>
-</div>
- 
-          {/* ── Destination selector ─────────────────────────────────────────── */}
+            {/* Default account selector — only for account destination, same as original */}
+            {destType === "account" && !allAsTransfer && (
+              <div className="space-y-1">
+                <Label className="text-xs">Default Import Account</Label>
+                <Select value={targetAccountId} onValueChange={setTargetAccountId}>
+                  <SelectTrigger className="w-[200px] bg-background border-border h-8 text-xs"><SelectValue placeholder="Select account" /></SelectTrigger>
+                  <SelectContent>{accounts.map(a => <SelectItem key={a.id} value={a.id}>{a.name} ({a.currency})</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+            )}
+          </div>
+
+          {/* NEW: Destination toggle — Bank Account or Credit Card */}
           <div className="border border-border rounded-xl p-3 space-y-3 bg-secondary/10">
-            <p className="text-sm font-semibold text-foreground">Import destination</p>
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Import destination</p>
             <div className="flex gap-2">
               <button
                 onClick={() => setDestType("account")}
-                className={`flex-1 py-2 rounded-lg text-xs border font-medium transition-all ${destType==="account" ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-secondary"}`}
+                className={`flex-1 py-2 rounded-lg text-xs border font-medium transition-all ${destType === "account" ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-secondary"}`}
               >
                 🏦 Bank Account
               </button>
               <button
                 onClick={() => { setDestType("card"); setAllAsTransfer(false); }}
-                className={`flex-1 py-2 rounded-lg text-xs border font-medium transition-all ${destType==="card" ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-secondary"}`}
+                className={`flex-1 py-2 rounded-lg text-xs border font-medium transition-all ${destType === "card" ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-secondary"}`}
               >
                 💳 Credit Card
               </button>
             </div>
- 
-            {destType === "account" && !allAsTransfer && (
-              <div className="space-y-1">
-                <Label className="text-xs">Default Import Account</Label>
-                <Select value={targetAccountId} onValueChange={setTargetAccountId}>
-                  <SelectTrigger className="w-full bg-background border-border h-8 text-xs"><SelectValue placeholder="Select account"/></SelectTrigger>
-                  <SelectContent>{accounts.map(a => <SelectItem key={a.id} value={a.id}>{a.name} ({a.currency})</SelectItem>)}</SelectContent>
-                </Select>
-              </div>
-            )}
-
-          {/* ── All as Transfer ── */}
- 
             {destType === "card" && (
               <div className="space-y-1">
-                <Label className="text-xs">Import to Credit Card</Label>
+                <Label className="text-xs">Select Credit Card</Label>
                 {creditCards.length === 0 ? (
-                  <p className="text-xs text-muted-foreground bg-secondary/40 rounded-lg p-2">No credit cards added yet. Go to Credit Cards page and add one first.</p>
+                  <p className="text-xs text-muted-foreground bg-secondary/40 rounded-lg p-2">No credit cards added yet. Go to the Credit Cards page and add one first.</p>
                 ) : (
                   <Select value={targetCardId} onValueChange={setTargetCardId}>
-                    <SelectTrigger className="w-full bg-background border-border h-8 text-xs"><SelectValue placeholder="Select card"/></SelectTrigger>
+                    <SelectTrigger className="w-full bg-background border-border h-8 text-xs"><SelectValue placeholder="Select card" /></SelectTrigger>
                     <SelectContent>
                       {creditCards.map(c => (
                         <SelectItem key={c.id} value={c.id}>
-                          <span className="flex items-center gap-2">
-                            <CreditCard className="w-3 h-3"/>
-                            {c.name} ···{c.last4}
-                          </span>
+                          <span className="flex items-center gap-2"><CreditCard className="w-3 h-3" />{c.name} ···{c.last4}</span>
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 )}
-                <p className="text-[11px] text-muted-foreground">Transactions will appear in the Credit Cards page under the selected card's Transactions tab.</p>
+                <p className="text-[11px] text-muted-foreground">Imported rows will appear in Credit Cards → that card's Transactions tab.</p>
               </div>
             )}
           </div>
- 
-          {/* ── All as Transfer — only available for bank account dest ── */}
+
+          {/* ── All as Transfer — only shown when destination is bank account ── */}
           {destType === "account" && (
             <div className="border border-border rounded-xl p-3 space-y-3 bg-secondary/10">
               <div className="flex items-center gap-2">
@@ -515,27 +654,41 @@ export default function StatementImport() {
                   onClick={() => setAllAsTransfer(v => !v)}
                   className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${allAsTransfer ? "bg-primary border-primary" : "border-border"}`}
                 >
-                  {allAsTransfer && <Check className="w-3 h-3 text-white"/>}
+                  {allAsTransfer && <Check className="w-3 h-3 text-white" />}
                 </button>
                 <span className="text-sm font-medium text-foreground">Import all selected as Transfers</span>
               </div>
               <AnimatePresence>
                 {allAsTransfer && (
-                  <motion.div initial={{ opacity:0, height:0 }} animate={{ opacity:1, height:"auto" }} exit={{ opacity:0, height:0 }} className="overflow-hidden">
+                  <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
                     <div className="flex flex-wrap gap-4 pt-1">
                       <div className="space-y-1">
                         <Label className="text-xs text-foreground">From Account</Label>
                         <Select value={transferFromAcct} onValueChange={setTransferFromAcct}>
-                          <SelectTrigger className="w-[180px] bg-background border-border h-8 text-xs"><SelectValue placeholder="From account"/></SelectTrigger>
-                          <SelectContent>{accounts.map(a => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}</SelectContent>
+                          <SelectTrigger className="w-[180px] bg-background border-border h-8 text-xs text-foreground">
+                            <SelectValue placeholder="From account" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {accounts.map(a => (
+                              <SelectItem key={a.id} value={a.id} className="text-foreground">{a.name}</SelectItem>
+                            ))}
+                          </SelectContent>
                         </Select>
                       </div>
-                      <div className="flex items-end pb-1"><ArrowRight className="w-4 h-4 text-muted-foreground"/></div>
+                      <div className="flex items-end pb-1">
+                        <ArrowRight className="w-4 h-4 text-muted-foreground" />
+                      </div>
                       <div className="space-y-1">
                         <Label className="text-xs text-foreground">To Account</Label>
                         <Select value={transferToAcct} onValueChange={setTransferToAcct}>
-                          <SelectTrigger className="w-[180px] bg-background border-border h-8 text-xs"><SelectValue placeholder="To account"/></SelectTrigger>
-                          <SelectContent>{accounts.map(a => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}</SelectContent>
+                          <SelectTrigger className="w-[180px] bg-background border-border h-8 text-xs text-foreground">
+                            <SelectValue placeholder="To account" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {accounts.map(a => (
+                              <SelectItem key={a.id} value={a.id} className="text-foreground">{a.name}</SelectItem>
+                            ))}
+                          </SelectContent>
                         </Select>
                       </div>
                     </div>
@@ -544,11 +697,13 @@ export default function StatementImport() {
               </AnimatePresence>
             </div>
           )}
- 
-          {/* ── Bulk Remap — only for bank account dest ── */}
+
+          {/* ── Bulk Remap — only shown when destination is bank account ── */}
           {destType === "account" && !allAsTransfer && (
-            <div className={`border rounded-xl p-3 space-y-3 transition-all duration-300 ${bulkReady ? "border-primary/50 bg-primary/5 shadow-sm shadow-primary/10" : "border-border bg-secondary/10"}`}>
-               <div className="flex items-center justify-between">
+            <div className={`border rounded-xl p-3 space-y-3 transition-all duration-300
+              ${bulkReady ? "border-primary/50 bg-primary/5 shadow-sm shadow-primary/10" : "border-border bg-secondary/10"}`}
+            >
+              <div className="flex items-center justify-between">
                 <span className="text-sm font-semibold text-foreground flex items-center gap-2">
                   Bulk Remap
                   {bulkReady    && !bulkApplied && <Badge className="text-[10px] px-1.5 py-0 bg-primary/20 text-primary border border-primary/30">Ready ✦</Badge>}
@@ -654,6 +809,12 @@ export default function StatementImport() {
                 {selectedIds.size === txns.length && <Check className="w-3 h-3 text-white" />}
               </button>
               <span className="text-sm font-medium">{selectedIds.size} / {txns.length} selected</span>
+              {/* NEW: show which card is targeted */}
+              {destType === "card" && targetCardId && (
+                <Badge variant="outline" className="text-[10px] border-violet-500/30 text-violet-400">
+                  → {creditCards.find(c => c.id === targetCardId)?.name || "Card"}
+                </Badge>
+              )}
             </div>
             <div className="flex gap-2">
               <Button size="sm" variant="outline" onClick={toggleAll}>{selectedIds.size === txns.length ? "Deselect All" : "Select All"}</Button>
@@ -667,7 +828,7 @@ export default function StatementImport() {
             <span className="col-span-2">Date</span>
             <span className="col-span-3">Description</span>
             <span className="col-span-2">Category</span>
-            <span className="col-span-2">{destType === "card" ? "Card" : "Account"}</span>
+            <span className="col-span-2">Account</span>
             <span className="col-span-1 text-right">Amount</span>
             <span className="col-span-1 text-right">Type</span>
           </div>
@@ -680,7 +841,7 @@ export default function StatementImport() {
                 const acct     = editAccounts[i] || tx.extra || "";
                 const catMatch  = !bulkRule.fromCategory  || cat  === bulkRule.fromCategory;
                 const acctMatch = !bulkRule.fromAccountId || acct === bulkRule.fromAccountId ||
-accounts.find(a => a.id === bulkRule.fromAccountId)?.name === acct;
+                                  accounts.find(a => a.id === bulkRule.fromAccountId)?.name === acct;
                 return catMatch && acctMatch;
               })();
 
@@ -709,11 +870,18 @@ accounts.find(a => a.id === bulkRule.fromAccountId)?.name === acct;
                       {ALL_CATS.map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
                   </span>
+                  {/* Account column — shows card name when destType=card, otherwise original select */}
                   <span className="col-span-2" onClick={e => e.stopPropagation()}>
-                        {destType === "card" ? (
-                      <span className="text-[10px] text-violet-400 truncate block">{creditCards.find(c=>c.id===targetCardId)?.name || "—"}</span>
+                    {destType === "card" ? (
+                      <span className="text-[10px] text-violet-400 truncate block">
+                        {creditCards.find(c => c.id === targetCardId)?.name || "—"}
+                      </span>
                     ) : (
-                      <select value={editAccounts[i] || targetAccountId} onChange={e => setEditAccounts(p => ({...p, [i]: e.target.value}))} className="w-full text-[10px] bg-secondary border-0 rounded px-1 py-0.5 text-foreground cursor-pointer">
+                      <select
+                        value={editAccounts[i] || targetAccountId}
+                        onChange={e => setEditAccounts(p => ({ ...p, [i]: e.target.value }))}
+                        className="w-full text-[10px] bg-secondary border-0 rounded px-1 py-0.5 text-foreground cursor-pointer"
+                      >
                         {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                       </select>
                     )}
@@ -738,7 +906,7 @@ accounts.find(a => a.id === bulkRule.fromAccountId)?.name === acct;
           )}
 
           <div className="p-4 border-t border-border flex flex-wrap justify-between items-center gap-3">
-            {/* Multi-currency summary grouped by currency */}
+            {/* Multi-currency summary — unchanged */}
             <div className="flex flex-wrap gap-3">
               {Array.from(new Set(txns.map(t => t.currency))).sort().map(cur => {
                 const curTxns = txns.filter(t => t.currency === cur);
