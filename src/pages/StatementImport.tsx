@@ -7,7 +7,11 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Check, AlertCircle, Upload, FileSpreadsheet, Import, ChevronDown, ChevronUp, Loader2, ArrowRight, RefreshCw, CreditCard, Calendar } from "lucide-react";
 import { useDB } from "@/lib/database";
-import { autoDetectAndParse, type ParsedTransaction } from "@/lib/xlsx-parsers";
+// ✅ Import applyDateFormat and DateFormatId from the single source of truth.
+//    The local duplicate copy has been removed — all date parsing goes through
+//    bankParsers.ts which handles: Date objects (local parts), Excel serials,
+//    YYYY-MM-DD pass-through, three-part numeric auto-inference, month names.
+import { autoDetectAndParse, applyDateFormat, type ParsedTransaction, type DateFormatId } from "@/lib/xlsx-parsers";
 import { useToast } from "@/hooks/use-toast";
 
 const CAT_COLORS: Record<string, string> = {
@@ -29,27 +33,12 @@ const ALL_CATS = Object.keys(CAT_COLORS);
 
 /** Map account-name keywords → currency code (case-insensitive substring match) */
 const ACCOUNT_CURRENCY_MAP: Array<[string, string]> = [
-  // AED accounts
-  ["liv",          "AED"],
-  ["neo",          "AED"],
-  ["mashreq",      "AED"],
-  ["emirates",     "AED"],
-  ["enbd",         "AED"],
-  ["adcb",         "AED"],
-  ["fab",          "AED"],
-  ["dib",          "AED"],
-  ["rakbank",      "AED"],
-  // BDT accounts
-  ["sonali",       "BDT"],
-  ["islami",       "BDT"],
-  ["dutch",        "BDT"],
-  ["brac",         "BDT"],
-  ["dbbl",         "BDT"],
-  // USD
-  ["wise",         "USD"],
-  ["paypal",       "USD"],
-  ["taptap",       "USD"],
-  ["remitly",      "USD"],
+  ["liv",      "AED"], ["neo",     "AED"], ["mashreq", "AED"],
+  ["emirates", "AED"], ["enbd",    "AED"], ["adcb",    "AED"],
+  ["fab",      "AED"], ["dib",     "AED"], ["rakbank", "AED"],
+  ["sonali",   "BDT"], ["islami",  "BDT"], ["dutch",   "BDT"],
+  ["brac",     "BDT"], ["dbbl",    "BDT"],
+  ["wise",     "USD"], ["paypal",  "USD"], ["taptap",  "USD"], ["remitly", "USD"],
 ];
 
 function inferCurrencyFromAccount(accountName: string): string {
@@ -57,55 +46,212 @@ function inferCurrencyFromAccount(accountName: string): string {
   for (const [keyword, currency] of ACCOUNT_CURRENCY_MAP) {
     if (lower.includes(keyword)) return currency;
   }
-  return "AED"; // sensible default for UAE-based usage
+  return "AED";
 }
 
-// ─── NEW: Date format types ───────────────────────────────────────────────────
-// Added to fix the wrong-date bug: "01-02-2026" was parsed as Jan 2 (MM-DD)
-// but the LIV/Mashreq statement uses DD-MM-YYYY meaning Feb 1.
-type DateFormatId = "auto" | "dd-mm-yyyy" | "mm-dd-yyyy" | "dd-mm-yy" | "mm-dd-yy" | "yy-mm-dd" | "yyyy-mm-dd";
-
 const DATE_FORMAT_OPTIONS: { value: DateFormatId; label: string; example: string }[] = [
-  { value: "auto",       label: "Auto-detect",  example: "tries all patterns" },
-  { value: "dd-mm-yyyy", label: "DD-MM-YYYY",   example: "01-02-2026 → 1 Feb" },
-  { value: "mm-dd-yyyy", label: "MM-DD-YYYY",   example: "01-02-2026 → 2 Jan" },
-  { value: "dd-mm-yy",   label: "DD-MM-YY",     example: "01-02-26 → 1 Feb 2026" },
-  { value: "mm-dd-yy",   label: "MM-DD-YY",     example: "01-02-26 → 2 Jan 2026" },
-  { value: "yy-mm-dd",   label: "YY-MM-DD",     example: "26-02-01 → 1 Feb 2026" },
+  { value: "auto",       label: "Auto-detect",  example: "tries all patterns"      },
+  { value: "dd-mm-yyyy", label: "DD-MM-YYYY",   example: "01-02-2026 → 1 Feb"      },
+  { value: "mm-dd-yyyy", label: "MM-DD-YYYY",   example: "01-02-2026 → 2 Jan"      },
+  { value: "dd-mm-yy",   label: "DD-MM-YY",     example: "01-02-26 → 1 Feb 2026"   },
+  { value: "mm-dd-yy",   label: "MM-DD-YY",     example: "01-02-26 → 2 Jan 2026"   },
+  { value: "yy-mm-dd",   label: "YY-MM-DD",     example: "26-02-01 → 1 Feb 2026"   },
   { value: "yyyy-mm-dd", label: "YYYY-MM-DD",   example: "2026-02-01 → 1 Feb (ISO)" },
 ];
 
-/**
- * Parse a raw cell value into YYYY-MM-DD using the user-selected format.
- * Only called when format !== "auto" to override dates that the bank parser
- * already detected. ISO dates (YYYY-MM-DD) are always passed through unchanged.
- */
-function applyDateFormat(raw: unknown, fmt: DateFormatId): string {
-  if (!raw) return new Date().toISOString().slice(0, 10);
-  if (raw instanceof Date) return raw.toISOString().slice(0, 10);
-  const s = String(raw).trim();
-  // Already ISO — never touch it
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  const m = s.match(/(\d+)[\/\-\.](\d+)[\/\-\.](\d+)/);
-  if (!m) {
-    const d = new Date(s);
-    return isNaN(d.getTime()) ? s : d.toISOString().slice(0, 10);
+// ─── Smart Category Helper ─────────────────────────────
+
+// In-memory store of learned categories keyed by keyword
+// In-memory store of learned categories keyed by keyword
+// In-memory store of learned categories keyed by keyword
+const learnedCategories: Record<string, string> = {};
+
+// Load learned categories from localStorage
+function loadLearnedCategories() {
+  const data = localStorage.getItem("learnedCategories");
+  if (data) {
+    Object.assign(learnedCategories, JSON.parse(data));
   }
-  const [, a, b, c] = m;
-  const n = (x: string) => parseInt(x, 10);
-  const yr = (x: string) => x.length === 2 ? `20${x}` : x;
-  let day: number, month: number, year: string;
-
-  if      (fmt === "dd-mm-yyyy") { day = n(a); month = n(b); year = c;      }
-  else if (fmt === "mm-dd-yyyy") { month = n(a); day = n(b); year = c;      }
-  else if (fmt === "dd-mm-yy")   { day = n(a); month = n(b); year = yr(c);  }
-  else if (fmt === "mm-dd-yy")   { month = n(a); day = n(b); year = yr(c);  }
-  else if (fmt === "yy-mm-dd")   { year = yr(a); month = n(b); day = n(c);  }
-  else /* yyyy-mm-dd */          { year = a; month = n(b); day = n(c);       }
-
-  if (!month || !day || !year) return s;
-  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
+
+// Save learned categories to localStorage
+function saveLearnedCategories() {
+  localStorage.setItem("learnedCategories", JSON.stringify(learnedCategories));
+}
+
+// Called when user manually edits a category
+function rememberUserCorrection(keyword: string, category: string) {
+  learnedCategories[keyword.toLowerCase()] = category;
+  saveLearnedCategories();
+}
+
+// Determine transaction type based on bank's data
+function determineType(amount: number, description: string): "income" | "expense" {
+  const desc = description.toLowerCase();
+  // Typical rule: if description includes "transfer payment received" or amount > 0 with CR -> income
+  if (desc.includes("transfer payment received") || amount > 0) return "income";
+  return "expense";
+}
+
+// Automatic categorization function
+function autoCategory(desc: string, amount: number, type: "income" | "expense"): string {
+  const d = desc.toLowerCase();
+
+  // 1️⃣ Check learned categories first
+  for (const keyword in learnedCategories) {
+    if (d.includes(keyword)) {
+      return learnedCategories[keyword];
+    }
+  }
+
+  // 2️⃣ Default category rules
+  if (d.includes("salary") || d.includes("refund")) return "Income";
+  if (d.includes("transfer payment received")) return "Transfers";
+  if (d.includes("transfer")) return "Transfers";
+
+  if (d.includes("tabby") || d.includes("tamara")) return "Shopping";
+
+  if (
+    d.includes("talabat") ||
+    d.includes("zomato") ||
+    d.includes("deliveroo") ||
+    d.includes("careem") ||
+    d.includes("keeta") ||
+    d.includes("delivery")
+  ) return "Food & Dining";
+
+  if (d.includes("emarat") || d.includes("adnoc") || d.includes("enoc")) return "Fuel";
+
+  if (
+    d.includes("electricity") ||
+    d.includes("dewa") ||
+    d.includes("sewa") ||
+    d.includes("fewa")
+  ) return "Utilities";
+
+  if (
+    d.includes("government") ||
+    d.includes("rta") ||
+    d.includes("credit bureau")
+  ) return "Government";
+
+  if (d.includes("uber") || d.includes("careem ride")) return "Transport";
+
+  if (d.includes("credit card payment")) return "Credit Card Payment";
+
+  // 3️⃣ Fallback category
+   return "Other";
+}
+
+// Format a single transaction respecting bank's income/expense sign
+interface Transaction {
+  date: string;
+  description: string;
+  account: string;
+  amount: number;
+  type: "income" | "expense"; // deduced from bank
+}
+
+// Determine type based on amount string
+function parseAmount(raw: string): { amount: number; type: "income" | "expense" } {
+  raw = raw.trim().toUpperCase();
+  if (raw.endsWith("CR")) {
+    const amt = parseFloat(raw.replace("CR", "").trim());
+    return { amount: amt, type: "income" };
+  } else {
+    const amt = parseFloat(raw.replace("DR", "").trim());
+    return { amount: amt, type: "expense" };
+  }
+}
+
+// Format transaction for Mashreq Neo style
+function formatTransaction(tx: {
+  date: string;
+  description: string;
+  account: string;
+  amount: number;
+  type: "income" | "expense";
+}) {
+  const category = autoCategory(tx.description, tx.amount, tx.type);
+  const formattedAmount = tx.type === "income" ? `+${tx.amount}` : `${tx.amount}`;
+
+  return `
+${tx.date}
+${tx.description}
+
+${category}
+${tx.account}
+${formattedAmount}
+${tx.type}
+  `.trim();
+}
+
+// Initialize learned categories on app start
+loadLearnedCategories();
+
+
+function parseSimpleBankSheet(
+  rows: unknown[][],
+  dateFormat: DateFormatId = "auto"
+): ParsedTransaction[] {
+  if (rows.length < 2) return [];
+
+  const header = (rows[0] as unknown[]).map(h =>
+    String(h ?? "").toLowerCase().trim()
+  );
+
+  const col = (name: string) =>
+    header.findIndex(h => h.includes(name));
+
+  const txnDateCol = col("transaction date");
+  const descCol    = col("description");
+  const amtCol     = col("amount");
+
+  const txns: ParsedTransaction[] = [];
+
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r] as unknown[];
+
+    const rawDate = txnDateCol >= 0 ? row[txnDateCol] : null;
+    const desc    = descCol >= 0 ? String(row[descCol] ?? "").trim() : "";
+    const rawAmt  = amtCol >= 0 ? row[amtCol] : null;
+
+    if (!desc && !rawAmt) continue;
+
+    let amount = 0;
+
+    if (typeof rawAmt === "number") {
+      amount = rawAmt;
+    } else {
+      amount = parseFloat(String(rawAmt).replace(/,/g, "").trim()) || 0;
+    }
+
+    txns.push({
+      date: rawDate
+        ? applyDateFormat(rawDate, dateFormat)
+        : new Date().toISOString().split("T")[0],
+
+      description: desc || "Unknown",
+
+      // IMPORTANT:
+      // Your sheet already uses negative for outgoing
+      // so DO NOT invert like Notion parser
+      amount: amount,
+
+      type: amount < 0 ? "expense" : "income",
+
+      category: autoCategory(desc, amount, amount < 0 ? "expense" : "income"),
+
+      currency: "AED",
+
+      extra: "",
+    });
+  }
+
+  return txns;
+}
+
+
 
 function parseNotionRows(rows: unknown[][], dateFormat: DateFormatId = "auto"): ParsedTransaction[] {
   if (rows.length < 2) return [];
@@ -121,26 +267,22 @@ function parseNotionRows(rows: unknown[][], dateFormat: DateFormatId = "auto"): 
 
   const dateCol    = col(["date"]);
   const descCol    = col(["expenses", "description", "desc", "name", "title"]);
-  const amtColMain = header.findIndex(h => (h === "total amount" || h === "total amount (aed)" || h === "amount") && !h.includes("(bd)") && !h.includes("(bdt)"));
-  const amtColBD   = header.findIndex(h => h.includes("total amount") && (h.includes("(bd)") || h.includes("(bdt)")));
+  const amtColMain = header.findIndex(h =>
+    (h === "total amount" || h === "total amount (aed)" || h === "amount") &&
+    !h.includes("(bd)") && !h.includes("(bdt)")
+  );
+  const amtColBD   = header.findIndex(h =>
+    h.includes("total amount") && (h.includes("(bd)") || h.includes("(bdt)"))
+  );
   const catCol     = col(["categories", "category"]);
   const acctCol    = col(["accounts", "account", "payment method"]);
   const currCol    = col(["currency"]);
 
+  // ✅ Uses the imported applyDateFormat — handles Date objects, serials,
+  //    text strings, and the auto-inference logic all in one place.
   const parseNotionDate = (raw: unknown): string => {
     if (!raw) return new Date().toISOString().split("T")[0];
-    if (raw instanceof Date) return raw.toISOString().split("T")[0];
-    const s = String(raw).trim();
-    // If user chose a specific format, apply it
-    if (dateFormat !== "auto") return applyDateFormat(raw, dateFormat);
-    // Original auto logic: dd-mm-yyyy / dd/mm/yyyy
-    const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
-    if (m) {
-      const y = m[3].length === 2 ? `20${m[3]}` : m[3];
-      return `${y}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
-    }
-    const d = new Date(s);
-    return isNaN(d.getTime()) ? s : d.toISOString().split("T")[0];
+    return applyDateFormat(raw, dateFormat);
   };
 
   // "Food (Food%20...csv)"  →  "Food"
@@ -151,7 +293,6 @@ function parseNotionRows(rows: unknown[][], dateFormat: DateFormatId = "auto"): 
     return paren ? paren[1].trim() : s;
   };
 
-  // Handles "3,000" / "1,234.56" / plain numbers
   const parseAmount = (raw: unknown): number => {
     if (raw === null || raw === undefined || raw === "") return 0;
     if (typeof raw === "number") return raw;
@@ -163,11 +304,11 @@ function parseNotionRows(rows: unknown[][], dateFormat: DateFormatId = "auto"): 
     const row  = rows[r] as unknown[];
     const desc = descCol >= 0 ? String(row[descCol] ?? "").trim() : "";
 
-    const rawMain = amtColMain >= 0 ? row[amtColMain] : null;
-    const rawBD   = amtColBD   >= 0 ? row[amtColBD]   : null;
+    const rawMain  = amtColMain >= 0 ? row[amtColMain] : null;
+    const rawBD    = amtColBD   >= 0 ? row[amtColBD]   : null;
     const isFilled = (v: unknown) => v !== null && v !== undefined && v !== "" && v !== 0;
-    const useMain = isFilled(rawMain);
-    const rawAmt  = useMain ? rawMain : (isFilled(rawBD) ? rawBD : null);
+    const useMain  = isFilled(rawMain);
+    const rawAmt   = useMain ? rawMain : (isFilled(rawBD) ? rawBD : null);
 
     if (!desc && !isFilled(rawAmt)) continue;
 
@@ -189,7 +330,7 @@ function parseNotionRows(rows: unknown[][], dateFormat: DateFormatId = "auto"): 
       description: desc || "Unknown",
       amount:      amount > 0 ? -amount : amount,
       type:        "expense",
-      category:    catCol  >= 0 ? cleanNotionName(row[catCol]) : "Other",
+      category:    catCol >= 0 ? cleanNotionName(row[catCol]) : "Other",
       currency,
       extra:       accountName,
     });
@@ -202,33 +343,62 @@ function isNotionSheet(rows: unknown[][]): boolean {
   const h = (rows[0] as unknown[]).map(c => String(c ?? "").toLowerCase());
   return h.some(c => c.includes("expenses")) && h.some(c => c.includes("categories"));
 }
+function isSimpleBankSheet(rows: unknown[][]): boolean {
+  if (!rows[0]) return false;
+
+  const h = (rows[0] as unknown[]).map(c =>
+    String(c ?? "").toLowerCase().trim()
+  );
+
+  return (
+    h.some(c => c.includes("transaction date")) &&
+    h.some(c => c.includes("posting date")) &&
+    h.some(c => c.includes("description")) &&
+    h.some(c => c.includes("amount"))
+  );
+}
+
 
 // ─── XLSX reader ──────────────────────────────────────────────────────────────
 async function readXlsxRows(file: File): Promise<unknown[][]> {
   try {
     const XLSX = await import("xlsx");
     const buffer = await file.arrayBuffer();
-    const wb = XLSX.read(buffer, { type: "array", cellDates: true });
-    const ws = wb.Sheets[wb.SheetNames[0]];
+    // ✅ cellDates: true  → SheetJS converts date-formatted cells to JS Date objects.
+    //    We then immediately convert those Date objects to local-calendar YYYY-MM-DD
+    //    strings using applyDateFormat, so every downstream parser receives a clean
+    //    string and never has to deal with Date objects or UTC-offset issues.
+    // const wb = XLSX.read(buffer, { type: "array", cellDates: true });
+    const wb = XLSX.read(buffer, { type: "array", cellDates: false });
+    const ws  = wb.Sheets[wb.SheetNames[0]];
     const range = XLSX.utils.decode_range(ws["!ref"] || "A1");
     const rows: unknown[][] = [];
+
     for (let R = range.s.r; R <= range.e.r; R++) {
       const row: unknown[] = [];
       for (let C = range.s.c; C <= range.e.c; C++) {
         const addr = XLSX.utils.encode_cell({ r: R, c: C });
         const cell = ws[addr];
         if (!cell) { row.push(null); continue; }
+
         if (cell.t === "d" && cell.v instanceof Date) {
-          // ✅ FIX: use local date parts — NOT toISOString() which is UTC.
-          // UAE is UTC+4. toISOString() on a Date at 2026-02-01T00:00:00Z
-          // returns "2026-01-31" because UTC midnight = Jan 31 8pm in UAE.
-          // getFullYear/getMonth/getDate return the local calendar date.
-          const d = cell.v as Date;
-          const localStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-          row.push(localStr);
+          // ✅ Convert Date → local YYYY-MM-DD here, before it reaches any parser.
+          //    applyDateFormat with a Date object uses getFullYear/getMonth/getDate
+          //    (local clock), NOT toISOString() which returns UTC and would give
+          //    the wrong day for any UTC+ timezone (e.g. UAE = UTC+4).
+          row.push(applyDateFormat(cell.v, "auto"));
           continue;
         }
-        if (cell.t === "n") { row.push(cell.v); continue; }
+
+        if (cell.t === "n") {
+          // ✅ Numeric cells that look like Excel date serials are left as numbers
+          //    here. applyDateFormat inside each parser will convert them correctly
+          //    via excelSerialToDateStr when it sees typeof raw === "number".
+          //    Other numeric cells (amounts, etc.) stay as numbers for the parsers.
+          row.push(cell.v);
+          continue;
+        }
+
         row.push(cell.v ?? null);
       }
       rows.push(row);
@@ -238,7 +408,6 @@ async function readXlsxRows(file: File): Promise<unknown[][]> {
     throw new Error("Could not read XLSX file. Make sure xlsx is installed (npm install xlsx).");
   }
 }
- 
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface BulkRule {
@@ -248,18 +417,14 @@ interface BulkRule {
   toAccountId:   string;
 }
 
-// NEW: destination type for import (bank account or credit card)
 type DestType = "account" | "card";
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function StatementImport() {
-  // NEW: added creditCards and addCardTransaction alongside existing destructures
   const { batchAddTransactions, accounts, creditCards, addCardTransaction } = useDB();
   const { toast } = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
-  // NEW: store last processed file so re-parsing on format change doesn't need re-upload
   const lastFileRef = useRef<File | null>(null);
-  // NEW: store raw rows so format changes can re-parse without re-reading file
   const lastRowsRef = useRef<unknown[][] | null>(null);
 
   const [dragging,        setDragging]        = useState(false);
@@ -273,19 +438,16 @@ export default function StatementImport() {
   const [editCats,        setEditCats]        = useState<Record<number, string>>({});
   const [editAccounts,    setEditAccounts]    = useState<Record<number, string>>({});
 
-  // All as Transfer — unchanged
   const [allAsTransfer,    setAllAsTransfer]    = useState(false);
   const [transferFromAcct, setTransferFromAcct] = useState("");
   const [transferToAcct,   setTransferToAcct]   = useState("");
 
-  // Bulk rule — unchanged
   const [bulkRule,    setBulkRule]    = useState<BulkRule>({ fromCategory: "", fromAccountId: "", toCategory: "", toAccountId: "" });
   const [bulkApplied, setBulkApplied] = useState(false);
 
-  // NEW: date format and destination type state
-  const [dateFormat,    setDateFormat]    = useState<DateFormatId>("auto");
-  const [destType,      setDestType]      = useState<DestType>("account");
-  const [targetCardId,  setTargetCardId]  = useState(creditCards[0]?.id ?? "");
+  const [dateFormat,   setDateFormat]   = useState<DateFormatId>("auto");
+  const [destType,     setDestType]     = useState<DestType>("account");
+  const [targetCardId, setTargetCardId] = useState(creditCards[0]?.id ?? "");
 
   const txns      = parseResult?.transactions ?? [];
   const displayed = showAll ? txns : txns.slice(0, 30);
@@ -299,14 +461,13 @@ export default function StatementImport() {
     bulkRule.toCategory    !== "" &&
     bulkRule.toAccountId   !== "";
 
-  // Auto-select rows matching the bulk "from" filters — unchanged
   useEffect(() => {
     if (!bulkRule.fromCategory && !bulkRule.fromAccountId) return;
     setSelectedIds(prev => {
       const next = new Set(prev);
       txns.forEach((tx, i) => {
-        const cat  = editCats[i]    || tx.category || "Other";
-        const acct = editAccounts[i] || tx.extra   || "";
+        const cat      = editCats[i]     || tx.category || "Other";
+        const acct     = editAccounts[i] || tx.extra    || "";
         const catMatch  = !bulkRule.fromCategory  || cat  === bulkRule.fromCategory;
         const acctMatch = !bulkRule.fromAccountId || acct === bulkRule.fromAccountId ||
                           accounts.find(a => a.id === bulkRule.fromAccountId)?.name === acct;
@@ -323,8 +484,8 @@ export default function StatementImport() {
     const newCats:  Record<number, string> = { ...editCats };
     const newAccts: Record<number, string> = { ...editAccounts };
     txns.forEach((tx, i) => {
-      const cat  = editCats[i]    || tx.category || "Other";
-      const acct = editAccounts[i] || tx.extra   || "";
+      const cat      = editCats[i]     || tx.category || "Other";
+      const acct     = editAccounts[i] || tx.extra    || "";
       const catMatch  = !bulkRule.fromCategory  || cat  === bulkRule.fromCategory;
       const acctMatch = !bulkRule.fromAccountId || acct === bulkRule.fromAccountId ||
                         accounts.find(a => a.id === bulkRule.fromAccountId)?.name === acct;
@@ -344,12 +505,11 @@ export default function StatementImport() {
     setBulkApplied(false);
   };
 
-  // ── NEW: apply date format to an already-parsed result set ───────────────
-  // This runs without re-reading the file — fast, using cached rows.
+  // ── Re-apply date format to cached rows without re-reading from disk ────────
+  // ✅ Uses the single applyDateFormat from bankParsers — no local copy needed.
   const applyFormatToRows = useCallback((rows: unknown[][], fmt: DateFormatId) => {
-    if (fmt === "auto") return; // auto already handled inside parsers
+    if (fmt === "auto") return;
 
-    // For Notion sheets we re-parse entirely (cheap, all in-memory)
     if (isNotionSheet(rows)) {
       const notionTxns = parseNotionRows(rows, fmt);
       setParseResult(prev => prev ? { ...prev, transactions: notionTxns } : prev);
@@ -357,24 +517,21 @@ export default function StatementImport() {
       return;
     }
 
-    // For bank statements: find the raw date column by header keywords,
-    // then re-apply the user format to each transaction's raw cell value.
-    // We do NOT re-run autoDetectAndParse (too slow / resets categories).
+    // For bank statements: find the transaction date column by header,
+    // then re-apply the user format to each row's raw date cell.
     const header = (rows[0] as unknown[]).map(h => String(h ?? "").toLowerCase().trim());
-    // Look for columns whose header contains "date" or "tran" (transaction date)
-    // but NOT "posting" — we want the transaction date, not the bank-posting date.
     const dateColIdx = header.findIndex(h =>
       (h.includes("tran") && h.includes("date")) ||
       h === "date" ||
       h === "value date" ||
       h === "transaction date"
     );
-    if (dateColIdx < 0) return; // can't find date column — leave as-is
+    if (dateColIdx < 0) return;
 
     setParseResult(prev => {
       if (!prev) return prev;
       const updated = prev.transactions.map((tx, ri) => {
-        const rawRow = rows[ri + 1] as unknown[] | undefined;
+        const rawRow  = rows[ri + 1] as unknown[] | undefined;
         if (!rawRow) return tx;
         const rawCell = rawRow[dateColIdx];
         if (!rawCell) return tx;
@@ -384,18 +541,20 @@ export default function StatementImport() {
     });
   }, []);
 
-  // ── File processing — original logic, extended with format + row cache ───
+  // ── File processing ──────────────────────────────────────────────────────────
   const processFile = useCallback(async (file: File) => {
     if (!file.name.match(/\.(xlsx|xls|csv)$/i)) {
-      toast({ title: "Invalid file type", description: "Please upload an .xlsx or .csv file", variant: "destructive" }); return;
+      toast({ title: "Invalid file type", description: "Please upload an .xlsx or .csv file", variant: "destructive" });
+      return;
     }
     setLoading(true); setImported(false); setParseResult(null);
     setFileInfo({ name: file.name, size: `${(file.size / 1024).toFixed(1)} KB` });
     setEditCats({}); setEditAccounts({});
     setBulkRule({ fromCategory: "", fromAccountId: "", toCategory: "", toAccountId: "" });
+
     try {
       const rows = await readXlsxRows(file);
-      lastRowsRef.current = rows; // cache for format-change re-processing
+      lastRowsRef.current = rows;
 
       if (isNotionSheet(rows)) {
         const notionTxns = parseNotionRows(rows, dateFormat);
@@ -404,25 +563,47 @@ export default function StatementImport() {
         toast({ title: "✓ Notion Export", description: `${notionTxns.length} transactions parsed` });
         return;
       }
-      const result = autoDetectAndParse(rows);
-      // Apply user date format on top of auto-detected dates
-      if (dateFormat !== "auto") {
-        applyFormatToRows(rows, dateFormat);
-        // applyFormatToRows uses setParseResult, but we haven't called it yet —
-        // so set the base result first, then the format overlay will follow.
-      }
+
+// ✅ Detect this bank format first
+if (isSimpleBankSheet(rows)) {
+  const txns = parseSimpleBankSheet(rows, dateFormat);
+
+  setParseResult({
+    transactions: txns,
+    bankName: "UAE Bank (Simple Format)",
+    accountType: "Bank Account",
+    currency: "AED",
+  });
+
+  setSelectedIds(new Set(txns.map((_, i) => i)));
+
+  toast({
+    title: "✓ Bank Statement Detected",
+    description: `${txns.length} transactions parsed`,
+  });
+
+  return;
+}
+
+
+      const result = autoDetectAndParse(rows, dateFormat);
       setParseResult(result);
       setSelectedIds(new Set(result.transactions.map((_, i) => i)));
-      // Now override dates if format is set
+
+      // ✅ If user picked an explicit format, overlay it on the auto-detected dates.
+      //    We call it after setParseResult so the base result is already set.
       if (dateFormat !== "auto") {
         applyFormatToRows(rows, dateFormat);
       }
+
       toast({ title: `✓ ${result.bankName}`, description: `${result.transactions.length} transactions parsed` });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Unknown error";
       setParseResult({ transactions: [], bankName: "Error", accountType: "", currency: "AED", error: msg });
       toast({ title: "Parse error", description: `${msg}. Check the file format or try a different date format setting.`, variant: "destructive" });
-    } finally { setLoading(false); }
+    } finally {
+      setLoading(false);
+    }
   }, [toast, dateFormat, applyFormatToRows]);
 
   const onDrop       = (e: React.DragEvent) => {
@@ -435,13 +616,11 @@ export default function StatementImport() {
   const toggleSelect = (i: number) => { const s = new Set(selectedIds); s.has(i) ? s.delete(i) : s.add(i); setSelectedIds(s); };
   const toggleAll    = () => selectedIds.size === txns.length ? setSelectedIds(new Set()) : setSelectedIds(new Set(txns.map((_, i) => i)));
 
-  // NEW: when user changes the date format while a file is already loaded,
-  // re-apply it instantly without re-reading from disk.
   const handleDateFormatChange = (fmt: DateFormatId) => {
     setDateFormat(fmt);
     if (lastRowsRef.current && parseResult) {
       if (fmt === "auto") {
-        // Re-process the file fully to get back the auto-detected dates
+        // Full re-parse to restore auto-detected dates
         if (lastFileRef.current) processFile(lastFileRef.current);
       } else {
         applyFormatToRows(lastRowsRef.current, fmt);
@@ -449,9 +628,8 @@ export default function StatementImport() {
     }
   };
 
-  // ── Import — original logic + NEW credit card branch ─────────────────────
+  // ── Import ────────────────────────────────────────────────────────────────
   const handleImport = () => {
-    // NEW: credit card import path
     if (destType === "card") {
       if (!targetCardId) {
         toast({ title: "Select a credit card first", variant: "destructive" }); return;
@@ -463,7 +641,7 @@ export default function StatementImport() {
         addCardTransaction(targetCardId, {
           date:        tx.date,
           description: tx.description.slice(0, 80),
-          amount:      tx.amount,           // negative = charge, positive = credit/refund
+          amount:      tx.amount,
           category:    editCats[i] || tx.category || "Other",
         });
         count++;
@@ -477,7 +655,6 @@ export default function StatementImport() {
       return;
     }
 
-    // Original bank account import — unchanged
     if (!allAsTransfer && !targetAccountId) { toast({ title: "Select an account first", variant: "destructive" }); return; }
     if (allAsTransfer && (!transferFromAcct || !transferToAcct)) { toast({ title: "Select both transfer accounts", variant: "destructive" }); return; }
 
@@ -509,7 +686,7 @@ export default function StatementImport() {
       });
 
     batchAddTransactions(finalList);
-    const acct    = accounts.find(a => a.id === targetAccountId);
+    const acct     = accounts.find(a => a.id === targetAccountId);
     const totalIn  = finalList.filter(t => (t.amount ?? 0) > 0).reduce((s, t) => s + (t.amount ?? 0), 0);
     const totalOut = finalList.filter(t => (t.amount ?? 0) < 0).reduce((s, t) => s + Math.abs(t.amount ?? 0), 0);
     setImported(true);
@@ -517,7 +694,7 @@ export default function StatementImport() {
     setParseResult(null); setFileInfo(null); setSelectedIds(new Set());
   };
 
-  // ── Render ───────────────────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6">
       <PageHeader title="Statement Import" subtitle="Drag & drop your bank XLSX / Notion statements for automatic parsing" />
@@ -540,7 +717,7 @@ export default function StatementImport() {
         ))}
       </div>
 
-      {/* NEW: Date format picker — sits above the drop zone so user sets it before uploading */}
+      {/* Date format picker */}
       <div className="glass-card p-3 flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-2 text-sm font-medium text-foreground shrink-0">
           <Calendar className="w-4 h-4 text-primary" />
@@ -568,7 +745,7 @@ export default function StatementImport() {
         )}
       </div>
 
-      {/* Drop zone — unchanged */}
+      {/* Drop zone */}
       <motion.div
         initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
         onDragOver={e => { e.preventDefault(); setDragging(true); }}
@@ -591,7 +768,6 @@ export default function StatementImport() {
       {parseResult && !parseResult.error && (
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="glass-card p-4 space-y-4">
 
-          {/* Stats row — unchanged, except default account selector only shown for account dest */}
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-5 flex-wrap text-xs">
               <div><p className="text-muted-foreground">Bank / Source</p><p className="font-semibold text-foreground">{parseResult.bankName}</p></div>
@@ -605,7 +781,6 @@ export default function StatementImport() {
               </div>
               <div><p className="text-muted-foreground">Found</p><p className="font-semibold text-primary">{txns.length} transactions</p></div>
             </div>
-            {/* Default account selector — only for account destination, same as original */}
             {destType === "account" && !allAsTransfer && (
               <div className="space-y-1">
                 <Label className="text-xs">Default Import Account</Label>
@@ -617,7 +792,7 @@ export default function StatementImport() {
             )}
           </div>
 
-          {/* NEW: Destination toggle — Bank Account or Credit Card */}
+          {/* Destination toggle */}
           <div className="border border-border rounded-xl p-3 space-y-3 bg-secondary/10">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Import destination</p>
             <div className="flex gap-2">
@@ -656,7 +831,7 @@ export default function StatementImport() {
             )}
           </div>
 
-          {/* ── All as Transfer — only shown when destination is bank account ── */}
+          {/* All as Transfer */}
           {destType === "account" && (
             <div className="border border-border rounded-xl p-3 space-y-3 bg-secondary/10">
               <div className="flex items-center gap-2">
@@ -679,9 +854,7 @@ export default function StatementImport() {
                             <SelectValue placeholder="From account" />
                           </SelectTrigger>
                           <SelectContent>
-                            {accounts.map(a => (
-                              <SelectItem key={a.id} value={a.id} className="text-foreground">{a.name}</SelectItem>
-                            ))}
+                            {accounts.map(a => <SelectItem key={a.id} value={a.id} className="text-foreground">{a.name}</SelectItem>)}
                           </SelectContent>
                         </Select>
                       </div>
@@ -695,9 +868,7 @@ export default function StatementImport() {
                             <SelectValue placeholder="To account" />
                           </SelectTrigger>
                           <SelectContent>
-                            {accounts.map(a => (
-                              <SelectItem key={a.id} value={a.id} className="text-foreground">{a.name}</SelectItem>
-                            ))}
+                            {accounts.map(a => <SelectItem key={a.id} value={a.id} className="text-foreground">{a.name}</SelectItem>)}
                           </SelectContent>
                         </Select>
                       </div>
@@ -708,7 +879,7 @@ export default function StatementImport() {
             </div>
           )}
 
-          {/* ── Bulk Remap — only shown when destination is bank account ── */}
+          {/* Bulk Remap */}
           {destType === "account" && !allAsTransfer && (
             <div className={`border rounded-xl p-3 space-y-3 transition-all duration-300
               ${bulkReady ? "border-primary/50 bg-primary/5 shadow-sm shadow-primary/10" : "border-border bg-secondary/10"}`}
@@ -716,8 +887,8 @@ export default function StatementImport() {
               <div className="flex items-center justify-between">
                 <span className="text-sm font-semibold text-foreground flex items-center gap-2">
                   Bulk Remap
-                  {bulkReady    && !bulkApplied && <Badge className="text-[10px] px-1.5 py-0 bg-primary/20 text-primary border border-primary/30">Ready ✦</Badge>}
-                  {bulkApplied  && <Badge className="text-[10px] px-1.5 py-0 bg-green-500/20 text-green-400 border border-green-500/30">Applied ✓</Badge>}
+                  {bulkReady   && !bulkApplied && <Badge className="text-[10px] px-1.5 py-0 bg-primary/20 text-primary border border-primary/30">Ready ✦</Badge>}
+                  {bulkApplied && <Badge className="text-[10px] px-1.5 py-0 bg-green-500/20 text-green-400 border border-green-500/30">Applied ✓</Badge>}
                 </span>
                 <button onClick={resetBulkRule} className="text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors">
                   <RefreshCw className="w-3 h-3" />Reset
@@ -726,82 +897,54 @@ export default function StatementImport() {
               <p className="text-[11px] text-muted-foreground">
                 Selecting a "From" value auto-highlights matching rows. Fill all four fields, then click Apply.
               </p>
-
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {/* FROM */}
                 <div className="space-y-2 p-2 rounded-lg bg-secondary/20">
                   <p className="text-[10px] font-semibold uppercase text-muted-foreground tracking-wider">From</p>
                   <div className="space-y-1">
                     <Label className="text-[11px]">Category</Label>
-                    <select
-                      value={bulkRule.fromCategory}
-                      onChange={e => setBulkRule(r => ({ ...r, fromCategory: e.target.value }))}
-                      className="w-full text-xs bg-background border border-border rounded px-2 py-1.5 text-foreground"
-                    >
+                    <select value={bulkRule.fromCategory} onChange={e => setBulkRule(r => ({ ...r, fromCategory: e.target.value }))}
+                      className="w-full text-xs bg-background border border-border rounded px-2 py-1.5 text-foreground">
                       <option value="">— any category —</option>
                       {presentCategories.map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
                   </div>
                   <div className="space-y-1">
                     <Label className="text-[11px]">Account</Label>
-                    <select
-                      value={bulkRule.fromAccountId}
-                      onChange={e => setBulkRule(r => ({ ...r, fromAccountId: e.target.value }))}
-                      className="w-full text-xs bg-background border border-border rounded px-2 py-1.5 text-foreground"
-                    >
+                    <select value={bulkRule.fromAccountId} onChange={e => setBulkRule(r => ({ ...r, fromAccountId: e.target.value }))}
+                      className="w-full text-xs bg-background border border-border rounded px-2 py-1.5 text-foreground">
                       <option value="">— any account —</option>
                       {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-                      {presentAccountNames
-                        .filter(n => !accounts.some(a => a.name === n))
-                        .map(n => <option key={n} value={n}>{n} (import)</option>)
-                      }
+                      {presentAccountNames.filter(n => !accounts.some(a => a.name === n)).map(n => <option key={n} value={n}>{n} (import)</option>)}
                     </select>
                   </div>
                 </div>
-
-                {/* TO */}
                 <div className="space-y-2 p-2 rounded-lg bg-secondary/20">
                   <p className="text-[10px] font-semibold uppercase text-muted-foreground tracking-wider">To</p>
                   <div className="space-y-1">
                     <Label className="text-[11px]">Category</Label>
-                    <select
-                      value={bulkRule.toCategory}
-                      onChange={e => setBulkRule(r => ({ ...r, toCategory: e.target.value }))}
-                      className="w-full text-xs bg-background border border-border rounded px-2 py-1.5 text-foreground"
-                    >
+                    <select value={bulkRule.toCategory} onChange={e => setBulkRule(r => ({ ...r, toCategory: e.target.value }))}
+                      className="w-full text-xs bg-background border border-border rounded px-2 py-1.5 text-foreground">
                       <option value="">— select —</option>
                       {ALL_CATS.map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
                   </div>
                   <div className="space-y-1">
                     <Label className="text-[11px]">Account</Label>
-                    <select
-                      value={bulkRule.toAccountId}
-                      onChange={e => setBulkRule(r => ({ ...r, toAccountId: e.target.value }))}
-                      className="w-full text-xs bg-background border border-border rounded px-2 py-1.5 text-foreground"
-                    >
+                    <select value={bulkRule.toAccountId} onChange={e => setBulkRule(r => ({ ...r, toAccountId: e.target.value }))}
+                      className="w-full text-xs bg-background border border-border rounded px-2 py-1.5 text-foreground">
                       <option value="">— select —</option>
                       {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                     </select>
                   </div>
                 </div>
               </div>
-
-              <Button
-                size="sm"
+              <Button size="sm"
                 className={`w-full gap-2 transition-all ${bulkReady ? "opacity-100" : "opacity-40 cursor-not-allowed"}`}
-                disabled={!bulkReady}
-                onClick={applyBulkRule}
-              >
+                disabled={!bulkReady} onClick={applyBulkRule}>
                 <Check className="w-3.5 h-3.5" />
                 Apply to {selectedIds.size} selected row{selectedIds.size !== 1 ? "s" : ""}
               </Button>
-
-              {bulkApplied && (
-                <p className="text-[11px] text-center text-muted-foreground">
-                  Done! Click Reset above to configure another batch.
-                </p>
-              )}
+              {bulkApplied && <p className="text-[11px] text-center text-muted-foreground">Done! Click Reset above to configure another batch.</p>}
             </div>
           )}
         </motion.div>
@@ -812,14 +955,11 @@ export default function StatementImport() {
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="glass-card overflow-hidden">
           <div className="flex items-center justify-between p-4 border-b border-border">
             <div className="flex items-center gap-3">
-              <button
-                onClick={toggleAll}
-                className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${selectedIds.size === txns.length ? "bg-primary border-primary" : "border-border"}`}
-              >
+              <button onClick={toggleAll}
+                className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${selectedIds.size === txns.length ? "bg-primary border-primary" : "border-border"}`}>
                 {selectedIds.size === txns.length && <Check className="w-3 h-3 text-white" />}
               </button>
               <span className="text-sm font-medium">{selectedIds.size} / {txns.length} selected</span>
-              {/* NEW: show which card is targeted */}
               {destType === "card" && targetCardId && (
                 <Badge variant="outline" className="text-[10px] border-violet-500/30 text-violet-400">
                   → {creditCards.find(c => c.id === targetCardId)?.name || "Card"}
@@ -832,7 +972,6 @@ export default function StatementImport() {
             </div>
           </div>
 
-          {/* Column headers */}
           <div className="grid grid-cols-12 gap-2 px-4 py-2 text-[10px] font-semibold uppercase text-muted-foreground bg-secondary/20">
             <span className="col-span-1" />
             <span className="col-span-2">Date</span>
@@ -848,7 +987,7 @@ export default function StatementImport() {
               const sel = selectedIds.has(i);
               const cat = editCats[i] || tx.category || "Other";
               const matchesBulk = destType === "account" && (bulkRule.fromCategory !== "" || bulkRule.fromAccountId !== "") && (() => {
-                const acct     = editAccounts[i] || tx.extra || "";
+                const acct      = editAccounts[i] || tx.extra || "";
                 const catMatch  = !bulkRule.fromCategory  || cat  === bulkRule.fromCategory;
                 const acctMatch = !bulkRule.fromAccountId || acct === bulkRule.fromAccountId ||
                                   accounts.find(a => a.id === bulkRule.fromAccountId)?.name === acct;
@@ -856,13 +995,10 @@ export default function StatementImport() {
               })();
 
               return (
-                <div
-                  key={i}
-                  onClick={() => toggleSelect(i)}
+                <div key={i} onClick={() => toggleSelect(i)}
                   className={`grid grid-cols-12 gap-2 px-4 py-2.5 items-center cursor-pointer transition-colors hover:bg-secondary/20
                     ${sel ? "" : "opacity-40"}
-                    ${matchesBulk && !bulkApplied ? "ring-1 ring-inset ring-primary/40 bg-primary/5" : ""}
-                  `}
+                    ${matchesBulk && !bulkApplied ? "ring-1 ring-inset ring-primary/40 bg-primary/5" : ""}`}
                 >
                   <span className="col-span-1">
                     <div className={`w-4 h-4 rounded border-2 flex items-center justify-center ${sel ? "bg-primary border-primary" : "border-border"}`}>
@@ -872,26 +1008,19 @@ export default function StatementImport() {
                   <span className="col-span-2 text-xs text-muted-foreground">{tx.date}</span>
                   <span className="col-span-3 text-xs text-foreground truncate" title={tx.description}>{tx.description}</span>
                   <span className="col-span-2" onClick={e => e.stopPropagation()}>
-                    <select
-                      value={cat}
-                      onChange={e => setEditCats(p => ({ ...p, [i]: e.target.value }))}
-                      className="w-full text-[10px] bg-secondary border-0 rounded px-1 py-0.5 text-foreground cursor-pointer"
-                    >
+                    <select value={cat} onChange={e => setEditCats(p => ({ ...p, [i]: e.target.value }))}
+                      className="w-full text-[10px] bg-secondary border-0 rounded px-1 py-0.5 text-foreground cursor-pointer">
                       {ALL_CATS.map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
                   </span>
-                  {/* Account column — shows card name when destType=card, otherwise original select */}
                   <span className="col-span-2" onClick={e => e.stopPropagation()}>
                     {destType === "card" ? (
                       <span className="text-[10px] text-violet-400 truncate block">
                         {creditCards.find(c => c.id === targetCardId)?.name || "—"}
                       </span>
                     ) : (
-                      <select
-                        value={editAccounts[i] || targetAccountId}
-                        onChange={e => setEditAccounts(p => ({ ...p, [i]: e.target.value }))}
-                        className="w-full text-[10px] bg-secondary border-0 rounded px-1 py-0.5 text-foreground cursor-pointer"
-                      >
+                      <select value={editAccounts[i] || targetAccountId} onChange={e => setEditAccounts(p => ({ ...p, [i]: e.target.value }))}
+                        className="w-full text-[10px] bg-secondary border-0 rounded px-1 py-0.5 text-foreground cursor-pointer">
                         {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                       </select>
                     )}
@@ -916,7 +1045,6 @@ export default function StatementImport() {
           )}
 
           <div className="p-4 border-t border-border flex flex-wrap justify-between items-center gap-3">
-            {/* Multi-currency summary — unchanged */}
             <div className="flex flex-wrap gap-3">
               {Array.from(new Set(txns.map(t => t.currency))).sort().map(cur => {
                 const curTxns = txns.filter(t => t.currency === cur);
@@ -925,14 +1053,16 @@ export default function StatementImport() {
                 return (
                   <div key={cur} className="text-xs text-muted-foreground flex items-center gap-1.5">
                     <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{cur}</Badge>
-                    {income > 0 && <span className="text-primary font-medium">+{income.toFixed(2)}</span>}
-                    {income > 0 && expense > 0 && <span className="text-muted-foreground">/</span>}
+                    {income  > 0 && <span className="text-primary font-medium">+{income.toFixed(2)}</span>}
+                    {income  > 0 && expense > 0 && <span className="text-muted-foreground">/</span>}
                     {expense > 0 && <span className="text-foreground font-medium">-{expense.toFixed(2)}</span>}
                   </div>
                 );
               })}
             </div>
-            <Button className="gap-2" onClick={handleImport} disabled={selectedIds.size === 0}><Import className="w-4 h-4" />Import {selectedIds.size} Transactions</Button>
+            <Button className="gap-2" onClick={handleImport} disabled={selectedIds.size === 0}>
+              <Import className="w-4 h-4" />Import {selectedIds.size} Transactions
+            </Button>
           </div>
         </motion.div>
       )}
