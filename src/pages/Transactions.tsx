@@ -210,7 +210,9 @@ export default function Transactions() {
  
   // Merge account transactions + card transactions + transfers
   const allTxs = useMemo(() => {
-    const acctTxs = transactions.map(t => ({
+    // const acctTxs = transactions.map(t => ({
+   // After  
+const acctTxs = transactions.filter(t => !t.isCreditCard).map(t => ({
       ...t,
       source: "account" as const,
       sourceLabel: accounts.find(a => a.id === t.accountId)?.name || "Unknown",
