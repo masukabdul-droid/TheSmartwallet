@@ -179,6 +179,7 @@ export interface ParsedTransaction {
   currency: string;
   category: string;
   extra?: string;
+  notes?: string;
 }
 
 export interface ParseResult {
