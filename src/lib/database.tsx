@@ -1339,6 +1339,13 @@ deleteTransaction: id => {
       }));
     },
 
+    deleteCreditCard: id => {
+      const c = creditCards.find(c => c.id === id);
+      if (c) saveToTrashSb({ id: uid(), type: "credit_card", label: c.name, detail: `${c.issuer} ···${c.last4}`, deletedAt: new Date().toISOString(), data: c });
+      sbDelete("credit_cards", id);
+      setCreditCardsRaw(p => p.filter(c => c.id !== id));
+    },
+
     companies,
     addCompany: c => setCompanies(p => [...p, { ...c, id: uid() }]),
     updateCompany: (id, u) => setCompanies(p => p.map(c => c.id===id ? { ...c, ...u } : c)),
