@@ -277,6 +277,7 @@ function parseNotionRows(rows: unknown[][], dateFormat: DateFormatId = "auto"): 
   const catCol     = col(["categories", "category"]);
   const acctCol    = col(["accounts", "account", "payment method"]);
   const currCol    = col(["currency"]);
+  const textCol    = col(["text"]);
 
   // ✅ Uses the imported applyDateFormat — handles Date objects, serials,
   //    text strings, and the auto-inference logic all in one place.
@@ -313,6 +314,7 @@ function parseNotionRows(rows: unknown[][], dateFormat: DateFormatId = "auto"): 
     if (!desc && !isFilled(rawAmt)) continue;
 
     const accountName = acctCol >= 0 ? cleanNotionName(row[acctCol]) : "";
+    const textNote    = textCol >= 0 ? String(row[textCol] ?? "").trim() : "";
 
     let currency = "AED";
     if (currCol >= 0 && row[currCol]) {
@@ -332,7 +334,7 @@ function parseNotionRows(rows: unknown[][], dateFormat: DateFormatId = "auto"): 
       type:        "expense",
       category:    catCol >= 0 ? cleanNotionName(row[catCol]) : "Other",
       currency,
-      extra:       accountName,
+      extra:       [accountName, textNote].filter(Boolean).join(" — "),
     });
   }
   return txns;
