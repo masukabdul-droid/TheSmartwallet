@@ -334,7 +334,8 @@ function parseNotionRows(rows: unknown[][], dateFormat: DateFormatId = "auto"): 
       type:        "expense",
       category:    catCol >= 0 ? cleanNotionName(row[catCol]) : "Other",
       currency,
-      extra:       [accountName, textNote].filter(Boolean).join(" — "),
+      extra:       accountName,
+      notes:       textNote || undefined,
     });
   }
   return txns;
@@ -673,7 +674,7 @@ if (isSimpleBankSheet(rows)) {
             accountId:   transferFromAcct,
             toAccountId: transferToAcct,
             date:        tx.date,
-            notes:       tx.extra || "",
+            notes:       tx.notes || "",
           };
         }
         return {
@@ -683,7 +684,7 @@ if (isSimpleBankSheet(rows)) {
           category:  editCats[i]     || tx.category || "Other",
           accountId: editAccounts[i] || targetAccountId,
           date:      tx.date,
-          notes:     tx.extra || "",
+          notes:     tx.notes || "",
         };
       });
 
