@@ -85,14 +85,17 @@ const todayStr = new Date().toISOString().slice(0,10);
 function calcUtilization(card: CCType) {
   const spent = card.transactions.reduce((s,t)=>s+t.amount,0);
   const repaid = (card.repayments || []).reduce((s,r)=>s+r.amount,0);
-  const rawBalance = -spent;
-  const balance = Object.is(rawBalance, -0) ? 0 : rawBalance;
+
+  const rawBalance = Math.abs(spent) - repaid;
+
   return {
-    balance,
-    pct: card.limit>0 ? Math.min(100,(balance/card.limit)*100) : 0
+    balance: rawBalance,
+    pct: card.limit > 0
+      ? (rawBalance / card.limit) * 100
+      : 0
   };
 }
- 
+
 const CAT_ALIASES: Record<string,string[]> = {
   "dining": ["food","dining","food & dining","restaurant","restaurants","cafe","coffee","fast food","takeaway","delivery"],
   "food": ["food","dining","food & dining","restaurant","restaurants","cafe","coffee","fast food"],
@@ -407,8 +410,17 @@ export default function CreditCards() {
                       <div className="text-right"><p className="text-white/60 text-xs">Limit</p><p className="text-white font-semibold">AED {card.limit.toLocaleString()}</p></div>
                     </div>
                     <div className="mt-3">
-                      <div className="flex justify-between text-white/60 text-[10px] mb-1"><span>Utilization</span><span>{util.pct.toFixed(1)}%</span></div>
-                      <div className="w-full bg-white/20 rounded-full h-1.5"><div className="h-1.5 rounded-full transition-all" style={{width:`${util.pct}%`,backgroundColor:util.pct>80?"#f87171":util.pct>50?"#fbbf24":"white"}}/></div>
+                      <div className="flex justify-between text-white/60 text-[10px] mb-1"><span>Utilization</span><span>{util.pct.toFixed(2)}%</span></div>
+                      <div className="w-full bg-white/20 rounded-full h-1.5"><div className="h-1.5 rounded-full transition-all"
+style={{
+  width: `${Math.min(util.pct, 100)}%`,
+  backgroundColor:
+    util.pct > 80
+      ? "#f87171"
+      : util.pct > 50
+      ? "#fbbf24"
+      : "white"
+}}/></div>
                     </div>
                   </div>
                   <div className="p-4 space-y-3">
