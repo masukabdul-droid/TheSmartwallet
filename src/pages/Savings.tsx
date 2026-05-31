@@ -133,7 +133,7 @@ export default function Savings() {
         <div className="space-y-3">
           {savingsGoals.length===0&&<div className="p-8 text-center text-muted-foreground glass-card text-sm">No savings goals yet.</div>}
           {savingsGoals.filter(g => !filter.query || g.name.toLowerCase().includes(filter.query.toLowerCase()) || (g as any).platform?.toLowerCase().includes(filter.query.toLowerCase())).map((goal,i)=>{
-            const pct=goal.target>0?Math.min(100,(goal.current/goal.target)*100):0;
+            const pct = goal.target > 0 ? Math.round((goal.current / goal.target) * 100) : 0;
             const isExp=expanded===goal.id;
             const autoAcc=accounts.find(a=>a.id===(goal as any).autoPayAccountId);
             const autoCard=creditCards.find(c=>c.id===(goal as any).autoPayCreditCardId);
@@ -159,7 +159,7 @@ export default function Savings() {
                 <div><p className="text-muted-foreground">Target</p><p className="font-semibold">AED {goal.target.toLocaleString()}</p></div>
                 <div><p className="text-muted-foreground">Monthly</p><p className="font-semibold">AED {goal.monthly.toLocaleString()}</p></div>
               </div>
-              <div><div className="flex justify-between text-[10px] text-muted-foreground mb-1"><span>{pct.toFixed(1)}%</span><span>{goal.current.toLocaleString()} / {goal.target.toLocaleString()}</span></div><div className="w-full bg-secondary rounded-full h-1.5"><div className="h-1.5 rounded-full" style={{width:`${pct}%`,backgroundColor:goal.color}}/></div></div>
+              <div><div className="flex justify-between text-[10px] text-muted-foreground mb-1"><span>{pct.toFixed(1)}%</span><span>{goal.current.toLocaleString()} / {goal.target.toLocaleString()}</span></div><div className="w-full bg-secondary rounded-full h-1.5"><div className="h-1.5 rounded-full" style={{width:`${Math.min(pct, 100)}%`,backgroundColor:goal.color}}/></div></div>
               {(goal.transactions||[]).length>0&&(<><button onClick={()=>setExpanded(isExp?null:goal.id)} className="mt-2 w-full flex items-center justify-between text-[10px] text-muted-foreground hover:text-foreground"><span>History ({goal.transactions.length})</span>{isExp?<ChevronUp className="w-3.5 h-3.5"/>:<ChevronDown className="w-3.5 h-3.5"/>}</button><AnimatePresence>{isExp&&(<motion.div initial={{height:0,opacity:0}} animate={{height:"auto",opacity:1}} exit={{height:0,opacity:0}} className="overflow-hidden"><div className="mt-2 space-y-1 max-h-40 overflow-y-auto border-t border-border pt-2">{[...goal.transactions].reverse().map(tx=>(<div key={tx.id} className="flex items-center justify-between text-xs py-1 border-b border-border/30 last:border-0">
 
     <div>

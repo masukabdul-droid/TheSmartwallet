@@ -1860,6 +1860,27 @@ addInvestmentTx: (holdingId, tx) => {
   // Add the tx itself + DRIP buy in one atomic update
   setInvestmentHoldings(p => p.map(h => {
     if (h.id !== holdingId) return h;
+
+ // ✨ ADD THIS BLOCK:
+  if (tx.fromAccountId) {
+    const holding = investmentHoldings.find(h => h.id === holdingId);
+    let amount = tx.type === "buy" ? -tx.totalAmount : tx.totalAmount;
+    let transType: "income" | "expense" = tx.type === "buy" ? "expense" : "income";
+    
+    setTransactions(prev => [{
+      id: uid(),
+      name: `${tx.type === "buy" ? "Buy" : "Sell"} ${holding?.name || "Investment"}`,
+      amount: amount,
+      type: transType,
+      category: "Investments",
+      accountId: tx.fromAccountId!,
+      date: tx.date,
+      notes: tx.notes || `${tx.units || 0} units @ ${tx.pricePerUnit || 0}`
+    }, ...prev]);
+  }
+
+
+
     const withTx = { ...h, transactions: [...h.transactions, { ...tx, id: newId }] };
     if (tx.type === "drip" && tx.dripUnits && tx.dripUnits > 0) {
       const dripBuy = {

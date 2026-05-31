@@ -73,12 +73,27 @@ export default function Dashboard() {
 
   const income = filteredTxs.filter(t => t.type === "income").reduce((s, t) => s + t.amount, 0);
   const expenses = filteredTxs.filter(t => t.type === "expense").reduce((s, t) => s + t.amount, 0);
-  const savingsRate = income > 0 ? Math.round(((income - expenses) / income) * 100) : 0;
+  const depositedInPeriod =
+  goals.reduce((s, g) => s + g.transactions
+    .filter(t => { const d = new Date(t.date); return t.amount > 0 && d >= start && d <= end; })
+    .reduce((ss, t) => ss + t.amount, 0), 0)
+  + savingsGoals.reduce((s, g) => s + (g.transactions || [])
+    .filter(t => { const d = new Date(t.date); return t.amount > 0 && d >= start && d <= end; })
+    .reduce((ss, t) => ss + t.amount, 0), 0);
+
+const savingsRate = income > 0
+  ? Math.round(((income - expenses) / income) * 100)
+  : depositedInPeriod > 0 && expenses > 0
+  ? Math.round((depositedInPeriod / (depositedInPeriod + expenses)) * 100)
+  : depositedInPeriod > 0
+  ? 100
+  : 0;
 
   const totalBankBalance = accounts.reduce((s, a) => a.currency === "AED" ? s + getAccountBalance(a.id) : s, 0);
   const totalCCDebt = creditCards.reduce((s, c) => s + c.balance, 0);
   const totalLoanDebt = loans.reduce((s, l) => s + l.remainingBalance, 0);
-  const totalSavings = savingsGoals.reduce((s, g) => s + g.current, 0);
+  const totalSavings = savingsGoals.reduce((s, g) => s + g.current, 0)
+  + goals.reduce((s, g) => s + g.currentAmount, 0);
   const cryptoValue = cryptoHoldings.reduce((sum, h) => {
     const net = h.transactions.filter(t => t.type === "buy").reduce((s, t) => s + t.quantity, 0) - h.transactions.filter(t => t.type === "sell").reduce((s, t) => s + t.quantity, 0);
     const last = h.transactions.length > 0 ? h.transactions[h.transactions.length - 1].priceAed : 0;
@@ -121,8 +136,14 @@ export default function Dashboard() {
 
   const ccUtil = creditCards.reduce((s, c) => s + c.limit, 0) > 0
     ? Math.round((totalCCDebt / creditCards.reduce((s, c) => s + c.limit, 0)) * 100) : 0;
-  const goalsProgress = goals.reduce((s, g) => s + g.targetAmount, 0) > 0
-    ? Math.round((goals.reduce((s, g) => s + g.currentAmount, 0) / goals.reduce((s, g) => s + g.targetAmount, 0)) * 100) : 0;
+  const totalGoalTarget = goals.reduce((s, g) => s + g.targetAmount, 0)
+  + savingsGoals.reduce((s, g) => s + g.target, 0);
+
+const totalGoalCurrent = goals.reduce((s, g) => s + g.currentAmount, 0)
+  + savingsGoals.reduce((s, g) => s + g.current, 0);
+
+const goalsProgress = totalGoalTarget > 0
+  ? Math.round((totalGoalCurrent / totalGoalTarget) * 100) : 0;
 
   return (
     <div className="space-y-6">

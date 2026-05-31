@@ -149,7 +149,7 @@ export default function Goals() {
       <div className="space-y-4">
         {goals.length===0 && <div className="p-8 text-center text-muted-foreground glass-card text-sm">No goals yet. Create your first savings goal!</div>}
         {goals.map((g,i)=>{
-          const pct = Math.min((g.currentAmount/g.targetAmount)*100,100);
+          const pct = g.targetAmount > 0 ? Math.round((g.currentAmount / g.targetAmount) * 100) : 0;
           const remaining = g.targetAmount - g.currentAmount;
           const days = daysToTarget(g.targetDate);
           const daily = dailyNeeded(g);
@@ -191,7 +191,7 @@ export default function Goals() {
                     <span className="font-display font-bold text-foreground">AED {g.currentAmount.toLocaleString()}</span>
                     <span className="text-muted-foreground">of AED {g.targetAmount.toLocaleString()}</span>
                   </div>
-                  <Progress value={pct} className="h-2.5"/>
+                  <Progress value={Math.min(pct, 100)} className="h-2.5"/>
                   <div className="flex justify-between text-xs text-muted-foreground mt-1">
                     <span>{pct.toFixed(1)}% complete</span>
                     <span>{remaining > 0 ? `AED ${remaining.toLocaleString()} remaining` : "🎉 Goal reached!"}</span>
