@@ -1,5 +1,5 @@
 import { SearchFilter, EMPTY_FILTER, matchesFilter, SearchFilterState } from "@/components/ui/search-filter";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { PageHeader } from "@/components/ui/stat-card";
 import { Progress } from "@/components/ui/progress";
@@ -154,7 +154,7 @@ export default function Budgets() {
             <p className="text-xl font-bold text-foreground">AED {totalSpent.toLocaleString()} / <span className={totalLeftover>0?"text-primary":"text-destructive"}>AED {totalLeftover.toLocaleString()}</span></p>
           </div>
         </div>
-        <Progress value={totalBudget > 0 ? Math.min((totalSpent/totalBudget)*100, 100) : 0} className="h-2"/>
+        <Progress value={totalBudget > 0 ? Math.min((totalSpent / totalBudget) * 100, 100) : 0} className="h-2"/>
         <p className="text-xs text-muted-foreground mt-2">{totalBudget > 0 ? Math.round((totalSpent/totalBudget)*100) : 0}% of budget used</p>
       </motion.div>
 
@@ -175,7 +175,7 @@ export default function Budgets() {
           {filtered.length === 0 && <div className="p-6 text-center text-muted-foreground text-sm glass-card">No budgets for this period.</div>}
           {filtered.map((budget, i) => {
             const Icon = ICON_MAP[budget.iconName] || DollarSign;
-            const pct = budget.budget > 0 ? Math.min(Math.round((budget.spent/budget.budget)*100), 100) : 0;
+            const pct = budget.budget > 0 ? Math.round((budget.spent / budget.budget) * 100) : 0;
             const leftover = budget.budget - budget.spent;
             const isOver = leftover < 0;
             return (

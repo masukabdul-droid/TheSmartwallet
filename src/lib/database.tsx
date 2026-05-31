@@ -356,7 +356,7 @@ export interface CashEntry {
 
 // ─── New Investment Types ─────────────────────────────────────────────────────
 
-export type InvestmentType = "mutual_fund" | "etf" | "index_fund" | "bond";
+export type InvestmentType = "mutual_fund" | "etf" | "index_fund" | "bond" | "stock";
 
 export interface InvestmentHolding {
   id: string;
@@ -377,13 +377,25 @@ export interface InvestmentHolding {
   indexTracked?: string;     // e.g. "S&P 500"
   nav?: number;              // latest NAV price
   navDate?: string;
+  // ── Stock-specific (NEW) ──────────────────────────────────────────
+  exchange?: string;               // e.g. "NYSE", "NASDAQ", "ADX"
+  sector?: string;                 // e.g. "Technology", "Energy"
+  dividendFrequency?: "monthly" | "quarterly" | "semi_annual" | "annual";
+  dividendPerShare?: number;       // last declared dividend per share
+  dividendMode?: "cash_auto" | "cash_manual" | "drip";
+  // cash_auto  = automatically deposit dividend into linked account
+  // cash_manual = record dividend but user deposits manually
+  // drip       = dividend reinvested as more shares
+  dividendAccountId?: string;      // default account for cash dividends
+
+
   transactions: InvestmentTx[];
 }
 
 export interface InvestmentTx {
   id: string;
   date: string;
-  type: "buy" | "sell" | "dividend" | "coupon" | "maturity";
+  type: "buy" | "sell" | "dividend" | "coupon" | "maturity" | "drip";
   units?: number;            // units/shares/bonds purchased or sold
   pricePerUnit?: number;     // NAV or market price
   totalAmount: number;       // total AED value
@@ -391,6 +403,11 @@ export interface InvestmentTx {
   toAccountId?: string;      // for sell/dividend/coupon proceeds
   notes?: string;
   fees?: number;
+  // ── Stock dividend fields (NEW) ──────────────────────────────────
+  dividendMode?: "cash_auto" | "cash_manual" | "drip"; // per-transaction override
+  dripUnits?: number;   // units reinvested (for drip type)
+
+
 }
 
 export interface SavingsWithdrawal {
@@ -1828,41 +1845,215 @@ deleteTransaction: id => {
     investmentHoldings,
     addInvestmentHolding: h => setInvestmentHoldings(p => [...p, { ...h, id: uid(), transactions: [] }]),
     updateInvestmentHolding: (id, u) => setInvestmentHoldings(p => p.map(h => h.id===id ? { ...h, ...u } : h)),
-    addInvestmentTx: (holdingId, tx) => {
-      setInvestmentHoldings(p => p.map(h => {
-        if (h.id !== holdingId) return h;
-        return { ...h, transactions: [...h.transactions, { ...tx, id: uid() }] };
-      }));
-      // Deduct from account on buy
-      if (tx.type === "buy" && tx.fromAccountId) {
-        const holding = investmentHoldings.find(h => h.id === holdingId);
-        setTransactions(prev => [...prev, {
-          id: uid(), name: `${tx.type === "buy" ? "Buy" : "Sell"}: ${holding?.name || "Investment"}`,
-          amount: -(tx.totalAmount + (tx.fees || 0)),
-          type: "expense" as const, category: "Investment",
-          accountId: tx.fromAccountId!, date: tx.date,
-          notes: tx.notes,
-        }]);
+
+// // BEFORE:
+// addInvestmentTx: (holdingId, tx) => {
+//   setInvestmentHoldings(p => p.map(h => h.id === holdingId
+//     ? { ...h, transactions: [...h.transactions, { ...tx, id: uid() }] }
+//     : h
+//   ));
+// },
+
+addInvestmentTx: (holdingId, tx) => {
+  const newId = uid();
+
+  // Add the tx itself + DRIP buy in one atomic update
+  setInvestmentHoldings(p => p.map(h => {
+    if (h.id !== holdingId) return h;
+    const withTx = { ...h, transactions: [...h.transactions, { ...tx, id: newId }] };
+    if (tx.type === "drip" && tx.dripUnits && tx.dripUnits > 0) {
+      const dripBuy = {
+        id: uid(),
+        date: tx.date,
+        type: "buy" as const,
+        units: tx.dripUnits,
+        pricePerUnit: tx.totalAmount / tx.dripUnits,
+        totalAmount: tx.totalAmount,
+        notes: `🔄 DRIP reinvestment — ${tx.dripUnits} shares @ ${(tx.totalAmount / tx.dripUnits).toFixed(4)}`,
+        dividendMode: "drip" as const,
+      };
+      return { ...withTx, transactions: [...withTx.transactions, dripBuy] };
+    }
+    return withTx;
+  }));
+
+  const holding = investmentHoldings.find(h => h.id === holdingId);
+  const effectiveMode = tx.dividendMode ?? holding?.dividendMode;
+  const destAccount = tx.toAccountId ?? holding?.dividendAccountId;
+
+  // Auto-deposit dividend/coupon to account
+  if (
+    (tx.type === "dividend" || tx.type === "coupon") &&
+    effectiveMode === "cash_auto" &&
+    destAccount
+  ) {
+    setTransactions(prev => [{
+      id: uid(),
+      name: `${tx.type === "dividend" ? "Dividend" : "Coupon"}: ${holding?.name ?? "Investment"}`,
+      amount: tx.totalAmount,
+      type: "income" as const,
+      category: "Investment Income",
+      accountId: destAccount,
+      date: tx.date,
+      notes: tx.notes ?? `Auto-deposited ${tx.type} from ${holding?.ticker ?? holding?.name ?? ""}`,
+    }, ...prev]);
+  }
+
+  // Deduct from account on buy
+  if (tx.type === "buy" && tx.fromAccountId) {
+    setTransactions(prev => [...prev, {
+      id: uid(),
+      name: `Buy: ${holding?.name || "Investment"}`,
+      amount: -(tx.totalAmount + (tx.fees || 0)),
+      type: "expense" as const,
+      category: "Investment",
+      accountId: tx.fromAccountId!,
+      date: tx.date,
+      notes: tx.notes,
+    }]);
+  }
+
+  // Credit account on sell/coupon/maturity
+  if ((tx.type === "sell" || tx.type === "coupon" || tx.type === "maturity") && tx.toAccountId) {
+    const catMap: Record<string, string> = { sell: "Investment", coupon: "Bond Coupon", maturity: "Bond Maturity" };
+    setTransactions(prev => [...prev, {
+      id: uid(),
+      name: `${tx.type.charAt(0).toUpperCase() + tx.type.slice(1)}: ${holding?.name || "Investment"}`,
+      amount: tx.totalAmount - (tx.fees || 0),
+      type: "income" as const,
+      category: catMap[tx.type] || "Investment",
+      accountId: tx.toAccountId!,
+      date: tx.date,
+      notes: tx.notes,
+    }]);
+  }
+},
+updateInvestmentTx: (holdingId, txId, u) => {
+  const holding = investmentHoldings.find(h => h.id === holdingId);
+  const oldTx = holding?.transactions.find(t => t.id === txId);
+
+  // Update the investment transaction itself
+  setInvestmentHoldings(p => p.map(h =>
+    h.id === holdingId
+      ? { ...h, transactions: h.transactions.map(t => t.id === txId ? { ...t, ...u } : t) }
+      : h
+  ));
+
+  if (!oldTx || !holding) return;
+
+  const newTx = { ...oldTx, ...u };
+
+  // ── Auto-deposited dividend / coupon ─────────────────────────────
+  // Find the matching income transaction by name + old date + old amount
+  if (
+    (oldTx.type === "dividend" || oldTx.type === "coupon") &&
+    oldTx.dividendMode === "cash_auto"
+  ) {
+    const matchName = `${oldTx.type === "dividend" ? "Dividend" : "Coupon"}: ${holding.name}`;
+    setTransactions(prev => prev.map(t => {
+      if (
+        t.name === matchName &&
+        t.date === oldTx.date &&
+        t.amount === oldTx.totalAmount &&
+        t.category === "Investment Income"
+      ) {
+        return {
+          ...t,
+          amount: newTx.totalAmount,
+          date: newTx.date ?? t.date,
+          accountId: newTx.toAccountId ?? t.accountId,
+          notes: newTx.notes ?? t.notes,
+        };
       }
-      // Credit account on sell/dividend/coupon/maturity
-      if ((tx.type === "sell" || tx.type === "dividend" || tx.type === "coupon" || tx.type === "maturity") && tx.toAccountId) {
-        const holding = investmentHoldings.find(h => h.id === holdingId);
-        const catMap: Record<string, string> = { sell: "Investment", dividend: "Dividend", coupon: "Bond Coupon", maturity: "Bond Maturity" };
-        setTransactions(prev => [...prev, {
-          id: uid(), name: `${tx.type.charAt(0).toUpperCase() + tx.type.slice(1)}: ${holding?.name || "Investment"}`,
-          amount: tx.totalAmount - (tx.fees || 0),
-          type: "income" as const, category: catMap[tx.type] || "Investment",
-          accountId: tx.toAccountId!, date: tx.date,
-          notes: tx.notes,
-        }]);
+      return t;
+    }));
+  }
+
+  // ── Buy transaction ───────────────────────────────────────────────
+  if (oldTx.type === "buy" && oldTx.fromAccountId) {
+    const matchName = `Buy: ${holding.name}`;
+    setTransactions(prev => prev.map(t => {
+      if (
+        t.name === matchName &&
+        t.date === oldTx.date &&
+        Math.abs(t.amount) === oldTx.totalAmount &&
+        t.category === "Investment"
+      ) {
+        return {
+          ...t,
+          amount: -(newTx.totalAmount ?? oldTx.totalAmount),
+          date: newTx.date ?? t.date,
+          accountId: newTx.fromAccountId ?? t.accountId,
+          notes: newTx.notes ?? t.notes,
+        };
       }
-    },
-    updateInvestmentTx: (holdingId, txId, u) => setInvestmentHoldings(p => p.map(h =>
-      h.id === holdingId ? { ...h, transactions: h.transactions.map(t => t.id === txId ? { ...t, ...u } : t) } : h
-    )),
-    deleteInvestmentTx: (holdingId, txId) => setInvestmentHoldings(p => p.map(h =>
-      h.id === holdingId ? { ...h, transactions: h.transactions.filter(t => t.id !== txId) } : h
-    )),
+      return t;
+    }));
+  }
+
+  // ── Sell transaction ──────────────────────────────────────────────
+  if (oldTx.type === "sell" && oldTx.toAccountId) {
+    const matchName = `Sell: ${holding.name}`;
+    setTransactions(prev => prev.map(t => {
+      if (
+        t.name === matchName &&
+        t.date === oldTx.date &&
+        t.amount === oldTx.totalAmount &&
+        t.category === "Investment"
+      ) {
+        return {
+          ...t,
+          amount: newTx.totalAmount ?? oldTx.totalAmount,
+          date: newTx.date ?? t.date,
+          accountId: newTx.toAccountId ?? t.accountId,
+          notes: newTx.notes ?? t.notes,
+        };
+      }
+      return t;
+    }));
+  }
+},
+    deleteInvestmentTx: (holdingId, txId) => {
+  const holding = investmentHoldings.find(h => h.id === holdingId);
+  const tx = holding?.transactions.find(t => t.id === txId);
+
+  setInvestmentHoldings(p => p.map(h =>
+    h.id === holdingId
+      ? { ...h, transactions: h.transactions.filter(t => t.id !== txId) }
+      : h
+  ));
+
+  if (!tx || !holding) return;
+
+  // Remove the matching account transaction
+  if (tx.type === "dividend" || tx.type === "coupon") {
+    const matchName = `${tx.type === "dividend" ? "Dividend" : "Coupon"}: ${holding.name}`;
+    setTransactions(prev => prev.filter(t => !(
+      t.name === matchName &&
+      t.date === tx.date &&
+      t.amount === tx.totalAmount &&
+      t.category === "Investment Income"
+    )));
+  }
+  if (tx.type === "buy" && tx.fromAccountId) {
+    const matchName = `Buy: ${holding.name}`;
+    setTransactions(prev => prev.filter(t => !(
+      t.name === matchName &&
+      t.date === tx.date &&
+      Math.abs(t.amount) === tx.totalAmount &&
+      t.category === "Investment"
+    )));
+  }
+  if (tx.type === "sell" && tx.toAccountId) {
+    const matchName = `Sell: ${holding.name}`;
+    setTransactions(prev => prev.filter(t => !(
+      t.name === matchName &&
+      t.date === tx.date &&
+      t.amount === tx.totalAmount &&
+      t.category === "Investment"
+    )));
+  }
+},
     deleteInvestmentHolding: id => {
       const h = investmentHoldings.find(h => h.id === id);
       if (h) saveToTrashSb({ id: uid(), type: "investment", label: h.name, detail: h.type, deletedAt: new Date().toISOString(), data: h });

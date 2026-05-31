@@ -281,7 +281,7 @@ export default function Dashboard() {
             ) : (
               <div className="space-y-3">
                 {budgets.slice(0, 4).map(b => {
-                  const pct = b.budget > 0 ? Math.min(100, Math.round((b.spent / b.budget) * 100)) : 0;
+                  const pct = b.budget > 0 ? Math.round((b.spent / b.budget) * 100) : 0;
                   const status = b.spent > b.budget ? "over" : pct > 80 ? "warn" : "ok";
                   return (
                     <div key={b.id}>
@@ -290,7 +290,7 @@ export default function Dashboard() {
                         <span className={status === "over" ? "text-destructive font-medium" : status === "warn" ? "text-warning font-medium" : "text-primary"}>{pct}%</span>
                       </div>
                       <div className="w-full bg-secondary rounded-full h-1.5">
-                        <div className="h-1.5 rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: status === "over" ? "hsl(0,72%,51%)" : status === "warn" ? "hsl(40,90%,55%)" : b.color }} />
+                        <div className="h-1.5 rounded-full transition-all" style={{ width: `${Math.min(pct, 100)}%`, backgroundColor: status === "over" ? "hsl(0,72%,51%)" : status === "warn" ? "hsl(40,90%,55%)" : b.color }} />
                       </div>
                     </div>
                   );
@@ -302,7 +302,7 @@ export default function Dashboard() {
             <SectionHeader title="Financial Health Score" />
             <div className="space-y-3">
               {[
-                { label: "Savings Rate", pct: Math.min(savingsRate, 100), good: savingsRate >= 20, color: "bg-primary" },
+                { label: "Savings Rate", pct: savingsRate, good: savingsRate >= 20, color: "bg-primary" },
                 { label: "CC Utilization", pct: ccUtil, good: ccUtil <= 30, color: ccUtil <= 30 ? "bg-primary" : "bg-warning" },
                 { label: "Goals Progress", pct: goalsProgress, good: true, color: "bg-primary" },
               ].map(item => (
@@ -312,7 +312,7 @@ export default function Dashboard() {
                     <span className={`font-semibold ${item.good ? "text-primary" : "text-warning"}`}>{item.pct}%</span>
                   </div>
                   <div className="w-full bg-secondary rounded-full h-1.5">
-                    <div className={`h-1.5 rounded-full ${item.color} transition-all`} style={{ width: `${item.pct}%` }} />
+                    <div className="h-1.5 rounded-full transition-all" style={{ width: `${Math.min(item.pct, 100)}%`, backgroundColor: item.good ? "hsl(120,100%,40%)" : "hsl(40,100%,55%)" }} />
                   </div>
                 </div>
               ))}

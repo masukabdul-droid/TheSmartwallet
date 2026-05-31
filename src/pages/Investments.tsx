@@ -20,9 +20,20 @@ const TYPE_CONFIG = {
   etf:          { label: "ETF",          icon: "📈", color: "hsl(160,84%,39%)" },
   index_fund:   { label: "Index Fund",   icon: "📉", color: "hsl(280,70%,60%)" },
   bond:         { label: "Bond",         icon: "🏛️",  color: "hsl(40,90%,55%)"  },
+  stock:        { label: "Stock",        icon: "🏢",  color: "hsl(20,90%,55%)"  }, // NEW
 };
 
-const TX_TYPES = ["buy","sell","dividend","coupon","maturity"] as const;
+const TX_TYPES = ["buy","sell","dividend","coupon","maturity","drip"] as const;
+
+const DIVIDEND_MODES = [
+  { value: "cash_auto",   label: "💸 Auto-deposit to account" },
+  { value: "cash_manual", label: "📋 Record only (manual deposit)" },
+  { value: "drip",        label: "🔄 Reinvest as shares (DRIP)" },
+] as const;
+const DIVIDEND_FREQS = ["monthly","quarterly","semi_annual","annual"] as const;
+const STOCK_EXCHANGES = ["NYSE","NASDAQ","ADX","DFM","LSE","TSX","ASX","Other"];
+const STOCK_SECTORS = ["Technology","Healthcare","Finance","Energy","Consumer","Industrial","Utilities","Real Estate","Materials","Communication","Other"];
+
 const COUPON_FREQS = ["monthly","quarterly","semi_annual","annual"] as const;
 const CURRENCIES = ["AED","USD","EUR","GBP","BDT"];
 const COLORS = ["hsl(200,80%,50%)","hsl(160,84%,39%)","hsl(280,70%,60%)","hsl(40,90%,55%)","hsl(0,72%,51%)","hsl(330,70%,55%)"];
@@ -31,17 +42,21 @@ const EMPTY_HOLDING: any = {
   type: "etf", name: "", ticker: "", isin: "", color: COLORS[0], currency: "AED",
   issuer: "", couponRate: "", maturityDate: "", couponFrequency: "semi_annual",
   faceValue: "", expenseRatio: "", indexTracked: "", nav: "", navDate: "",
+  exchange: "", sector: "", dividendFrequency: "quarterly",
+  dividendPerShare: "", dividendMode: "cash_manual", dividendAccountId: "",
 };
 const EMPTY_TX: any = {
   date: new Date().toISOString().slice(0,10), type: "buy",
   units: "", pricePerUnit: "", totalAmount: "", fees: "",
   fromAccountId: "", toAccountId: "", notes: "",
+  dividendMode: "", dripUnits: "", // NEW
 };
 
 export default function Investments() {
   const { investmentHoldings, addInvestmentHolding, updateInvestmentHolding,
           addInvestmentTx, updateInvestmentTx, deleteInvestmentTx,
-          deleteInvestmentHolding, accounts, getAccountBalance } = useDB();
+          deleteInvestmentHolding, accounts, getAccountBalance,
+          addTransaction } = useDB();
 
   const [filter, setFilter] = useState<SearchFilterState>(EMPTY_FILTER);
   const [typeFilter, setTypeFilter] = useState<string>("all");
@@ -53,6 +68,37 @@ export default function Investments() {
   const [txHoldingId, setTxHoldingId] = useState("");
   const [editTx, setEditTx] = useState<InvestmentTx|null>(null);
   const [txForm, setTxForm] = useState<any>(EMPTY_TX);
+
+  // ── Manual dividend deposit dialog ───────────────────────────────
+  const [depositOpen, setDepositOpen] = useState(false);
+  const [depositTx, setDepositTx] = useState<{ holdingId: string; tx: InvestmentTx } | null>(null);
+  const [depositAccountId, setDepositAccountId] = useState("");
+  const [depositDate, setDepositDate] = useState(new Date().toISOString().slice(0, 10));
+  // const { addTransaction } = useDB();
+
+  const openDeposit = (holdingId: string, tx: InvestmentTx) => {
+    setDepositTx({ holdingId, tx });
+    setDepositAccountId("");
+    setDepositDate(tx.date);
+    setDepositOpen(true);
+  };
+  const handleDeposit = () => {
+    if (!depositTx || !depositAccountId) return;
+    const { tx } = depositTx;
+    const holding = investmentHoldings.find(h => h.id === depositTx.holdingId);
+    addTransaction({
+      name: `Dividend: ${holding?.name ?? "Investment"}`,
+      amount: tx.totalAmount,
+      type: "income",
+      category: "Investment Income",
+      accountId: depositAccountId,
+      date: depositDate,
+      notes: `Manual dividend deposit from ${holding?.ticker ?? holding?.name ?? ""}`,
+    });
+    // Mark the tx as deposited by updating its dividendMode
+    updateInvestmentTx(depositTx.holdingId, tx.id, { ...tx, dividendMode: "cash_auto" });
+    setDepositOpen(false);
+  };
 
   // ── Stats ────────────────────────────────────────────────────────────
   const stats = useMemo(() => {
@@ -90,7 +136,11 @@ export default function Investments() {
       issuer: h.issuer||"", couponRate: String(h.couponRate||""),
       maturityDate: h.maturityDate||"", couponFrequency: h.couponFrequency||"semi_annual",
       faceValue: String(h.faceValue||""), expenseRatio: String(h.expenseRatio||""),
-      indexTracked: h.indexTracked||"", nav: String(h.nav||""), navDate: h.navDate||"",
+      indexTracked: h.indexTracked||"", nav: String(h.nav||""), navDate: h.navDate||"", exchange: h.exchange||"", sector: h.sector||"",
+    dividendFrequency: h.dividendFrequency||"quarterly",
+    dividendPerShare: String(h.dividendPerShare||""),
+    dividendMode: h.dividendMode||"cash_manual",
+    dividendAccountId: h.dividendAccountId||"",
     });
     setHoldingOpen(true);
   };
@@ -105,7 +155,12 @@ export default function Investments() {
       expenseRatio: holdingForm.expenseRatio ? parseFloat(holdingForm.expenseRatio) : undefined,
       indexTracked: holdingForm.indexTracked||undefined,
       nav: holdingForm.nav ? parseFloat(holdingForm.nav) : undefined,
-      navDate: holdingForm.navDate||undefined,
+      navDate: holdingForm.navDate||undefined,  exchange: holdingForm.exchange||undefined,
+      sector: holdingForm.sector||undefined,
+      dividendFrequency: holdingForm.dividendFrequency||undefined,
+      dividendPerShare: holdingForm.dividendPerShare ? parseFloat(holdingForm.dividendPerShare) : undefined,
+      dividendMode: holdingForm.dividendMode||undefined,
+      dividendAccountId: holdingForm.dividendAccountId||undefined,
     };
     if (editHolding) updateInvestmentHolding(editHolding.id, data);
     else addInvestmentHolding(data);
@@ -139,7 +194,9 @@ export default function Investments() {
       fees: txForm.fees ? parseFloat(txForm.fees) : undefined,
       fromAccountId: txForm.fromAccountId||undefined,
       toAccountId: txForm.toAccountId||undefined,
-      notes: txForm.notes||undefined,
+      notes: txForm.notes||undefined, 
+      dividendMode: txForm.dividendMode||undefined,
+      dripUnits: txForm.dripUnits ? parseFloat(txForm.dripUnits) : undefined,
     };
     if (editTx) updateInvestmentTx(txHoldingId, editTx.id, data);
     else addInvestmentTx(txHoldingId, data);
@@ -151,6 +208,7 @@ export default function Investments() {
 
   const isBondType = holdingForm.type === "bond";
   const isFundType = ["mutual_fund","etf","index_fund"].includes(holdingForm.type);
+  const isStockType = holdingForm.type === "stock"; // NEW
 
   return (
     <div className="space-y-6">
@@ -260,7 +318,35 @@ export default function Investments() {
                     {h.indexTracked && <div><p className="text-muted-foreground">Tracks</p><p className="font-semibold">{h.indexTracked}</p></div>}
                   </div>
                 )}
-
+                {h.type === "stock" && (h.exchange || h.sector || h.dividendPerShare) && (
+                <div className="bg-secondary/30 rounded-lg px-3 py-2 mb-3 grid grid-cols-3 gap-2 text-xs">
+                  {h.exchange && <div><p className="text-muted-foreground">Exchange</p><p className="font-semibold">{h.exchange}</p></div>}
+                  {h.sector  && <div><p className="text-muted-foreground">Sector</p><p className="font-semibold">{h.sector}</p></div>}
+                  {h.dividendPerShare && (
+                    <div>
+                      <p className="text-muted-foreground">Div/Share</p>
+                      <p className="font-semibold text-primary">
+                        {h.currency} {h.dividendPerShare}
+                        {h.dividendFrequency ? ` / ${h.dividendFrequency.replace("_"," ")}` : ""}
+                      </p>
+                    </div>
+                  )}
+                  {h.dividendMode && (
+                    <div className="col-span-3 flex items-center gap-1.5 mt-0.5 pt-1.5 border-t border-border/30">
+                      <span className="text-muted-foreground">Dividend mode:</span>
+                      <Badge variant="outline" className="text-[10px]">
+                        {h.dividendMode === "cash_auto"   ? "💸 Auto-deposit" :
+                        h.dividendMode === "cash_manual" ? "📋 Manual" : "🔄 DRIP"}
+                      </Badge>
+                      {h.dividendAccountId && (
+                        <span className="text-muted-foreground text-[10px]">
+                          → {accounts.find(a => a.id === h.dividendAccountId)?.name}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
                 {/* Expand transactions */}
                 {h.transactions.length > 0 && (
                   <button onClick={() => setExpanded(isExp ? null : h.id)} className="w-full flex items-center justify-between text-xs text-muted-foreground hover:text-foreground mt-1">
@@ -274,12 +360,19 @@ export default function Investments() {
                     <motion.div initial={{height:0,opacity:0}} animate={{height:"auto",opacity:1}} exit={{height:0,opacity:0}} className="overflow-hidden">
                       <div className="mt-2 border-t border-border pt-2 space-y-1 max-h-60 overflow-y-auto">
                         {[...h.transactions].reverse().map(tx => {
-                          const isIncome = ["dividend","coupon","maturity"].includes(tx.type);
+                          const isIncome = ["dividend","coupon","maturity","drip"].includes(tx.type);
                           const isExpense = tx.type === "buy";
                           return (
                             <div key={tx.id} className="flex items-center justify-between text-xs py-1.5 border-b border-border/30 last:border-0 group">
                               <div>
-                                <span className={`font-bold capitalize mr-2 ${isIncome ? "text-primary" : isExpense ? "text-destructive" : "text-amber-400"}`}>{tx.type}</span>
+                                <span className={`font-bold capitalize mr-2 ${
+                                    ["dividend","drip","coupon","maturity"].includes(tx.type) ? "text-primary" :
+                                    tx.type === "buy" ? "text-destructive" : "text-amber-400"
+                                  }`}>
+                                    {tx.type === "drip" ? "🔄 DRIP" : tx.type}
+                                  </span>
+                                  {tx.dividendMode === "cash_auto" && <span className="text-[10px] bg-primary/10 text-primary px-1 rounded mr-1">auto-deposited</span>}
+                                  {tx.dividendMode === "cash_manual" && <span className="text-[10px] bg-secondary text-muted-foreground px-1 rounded mr-1">manual</span>}
                                 {tx.units && <span className="text-muted-foreground">{tx.units} units @ {tx.pricePerUnit?.toFixed(4)} · </span>}
                                 <span className="text-muted-foreground">{tx.date}</span>
                                 {tx.notes && <span className="text-muted-foreground"> · {tx.notes}</span>}
@@ -288,6 +381,14 @@ export default function Investments() {
                                 <span className={`font-semibold ${isIncome ? "text-primary" : ""}`}>
                                   {isIncome ? "+" : isExpense ? "-" : ""}{h.currency} {tx.totalAmount.toFixed(2)}
                                 </span>
+                                {tx.type === "dividend" && tx.dividendMode === "cash_manual" && (
+                                  <button
+                                    onClick={() => openDeposit(h.id, tx)}
+                                    className="opacity-0 group-hover:opacity-100 text-xs text-primary hover:text-primary/80 font-medium px-1.5 py-0.5 rounded bg-primary/10 hover:bg-primary/20 transition-colors"
+                                  >
+                                    Deposit
+                                  </button>
+                                )}
                                 <button onClick={() => openEditTx(h.id, tx)} className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground"><Edit2 className="w-3 h-3"/></button>
                                 <button onClick={() => deleteInvestmentTx(h.id, tx.id)} className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive"><Trash2 className="w-3 h-3"/></button>
                               </div>
@@ -376,6 +477,77 @@ export default function Investments() {
         </DialogContent>
       </Dialog>
 
+{isStockType && (
+  <div className="space-y-3 border border-orange-400/20 bg-orange-400/5 rounded-lg p-3">
+    <Label className="text-xs font-semibold text-orange-400">🏢 Stock Details</Label>
+    <div className="grid grid-cols-2 gap-3">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Exchange</Label>
+        <Select value={holdingForm.exchange} onValueChange={v=>setHoldingForm((f:any)=>({...f,exchange:v}))}>
+          <SelectTrigger className="bg-background border-border"><SelectValue placeholder="Select exchange"/></SelectTrigger>
+          <SelectContent>{STOCK_EXCHANGES.map(e=><SelectItem key={e} value={e}>{e}</SelectItem>)}</SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Sector</Label>
+        <Select value={holdingForm.sector} onValueChange={v=>setHoldingForm((f:any)=>({...f,sector:v}))}>
+          <SelectTrigger className="bg-background border-border"><SelectValue placeholder="Select sector"/></SelectTrigger>
+          <SelectContent>{STOCK_SECTORS.map(s=><SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
+        </Select>
+      </div>
+    </div>
+    <div className="border-t border-orange-400/10 pt-3">
+      <Label className="text-xs font-semibold text-orange-300 block mb-2">Dividend Settings</Label>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <Label className="text-xs">Dividend per Share</Label>
+          <Input type="number" step="0.0001" placeholder="e.g. 0.88"
+            value={holdingForm.dividendPerShare}
+            onChange={e=>setHoldingForm((f:any)=>({...f,dividendPerShare:e.target.value}))}
+            className="bg-background border-border"/>
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-xs">Frequency</Label>
+          <Select value={holdingForm.dividendFrequency} onValueChange={v=>setHoldingForm((f:any)=>({...f,dividendFrequency:v}))}>
+            <SelectTrigger className="bg-background border-border"><SelectValue/></SelectTrigger>
+            <SelectContent>{DIVIDEND_FREQS.map(f=><SelectItem key={f} value={f} className="capitalize">{f.replace("_"," ")}</SelectItem>)}</SelectContent>
+          </Select>
+        </div>
+      </div>
+      <div className="space-y-1.5 mt-3">
+        <Label className="text-xs">Default Dividend Mode</Label>
+        <div className="grid grid-cols-1 gap-1.5">
+          {DIVIDEND_MODES.map(m => (
+            <button key={m.value} onClick={()=>setHoldingForm((f:any)=>({...f,dividendMode:m.value}))}
+              className={`text-left px-3 py-2 rounded-lg border text-xs transition-all ${
+                holdingForm.dividendMode === m.value
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border text-muted-foreground hover:bg-secondary"
+              }`}>
+              {m.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {holdingForm.dividendMode === "cash_auto" && (
+        <div className="space-y-1.5 mt-3">
+          <Label className="text-xs">Auto-deposit to Account</Label>
+          <Select value={holdingForm.dividendAccountId} onValueChange={v=>setHoldingForm((f:any)=>({...f,dividendAccountId:v}))}>
+            <SelectTrigger className="bg-background border-border"><SelectValue placeholder="Select account"/></SelectTrigger>
+            <SelectContent>
+              {accounts.filter(a=>a.isActive).map(a=>(
+                <SelectItem key={a.id} value={a.id}>{a.name} ({a.currency})</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+    </div>
+  </div>
+)}
+
+
+
       {/* Add/Edit Transaction Dialog */}
       <Dialog open={txOpen} onOpenChange={setTxOpen}>
         <DialogContent className="w-full sm:max-w-md bg-card border-border">
@@ -412,6 +584,51 @@ export default function Investments() {
                 const field = txForm.type === "buy" ? "fromAccountId" : "toAccountId";
                 setTxForm((f:any)=>({...f,[field]:v==="_none"?"":v}));
               }}>
+                {/* Dividend mode override — shown for dividend / drip transactions */}
+{(txForm.type === "dividend" || txForm.type === "drip") && (
+  <div className="space-y-2 border border-primary/20 bg-primary/5 rounded-lg p-3">
+    <Label className="text-xs font-semibold text-primary">Dividend Options</Label>
+    <div className="space-y-1.5">
+      <Label className="text-xs">How to receive this dividend?</Label>
+      <div className="grid grid-cols-1 gap-1.5">
+        {DIVIDEND_MODES.map(m => (
+          <button key={m.value} onClick={()=>setTxForm((f:any)=>({...f,dividendMode:m.value, type: m.value==="drip" ? "drip" : "dividend"}))}
+            className={`text-left px-3 py-2 rounded-lg border text-xs transition-all ${
+              txForm.dividendMode === m.value || (m.value==="drip" && txForm.type==="drip")
+                ? "border-primary bg-primary/10 text-primary"
+                : "border-border text-muted-foreground hover:bg-secondary"
+            }`}>
+            {m.label}
+          </button>
+        ))}
+      </div>
+    </div>
+    {txForm.dividendMode === "drip" && (
+      <div className="space-y-1.5">
+        <Label className="text-xs">Units Reinvested</Label>
+        <Input type="number" step="0.0001" placeholder="e.g. 1.234"
+          value={txForm.dripUnits}
+          onChange={e=>setTxForm((f:any)=>({...f,dripUnits:e.target.value}))}
+          className="bg-background border-border"/>
+      </div>
+    )}
+    {(txForm.dividendMode === "cash_auto" || txForm.dividendMode === "cash_manual") && (
+      <div className="space-y-1.5">
+        <Label className="text-xs">
+          {txForm.dividendMode === "cash_auto" ? "Deposit to Account" : "Account (optional)"}
+        </Label>
+        <Select value={txForm.toAccountId} onValueChange={v=>setTxForm((f:any)=>({...f,toAccountId:v}))}>
+          <SelectTrigger className="bg-background border-border"><SelectValue placeholder="Select account"/></SelectTrigger>
+          <SelectContent>
+            {accounts.filter(a=>a.isActive).map(a=>(
+              <SelectItem key={a.id} value={a.id}>{a.name} ({a.currency})</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    )}
+  </div>
+)}
                 <SelectTrigger className="bg-background border-border"><SelectValue placeholder="None"/></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="_none">None</SelectItem>
@@ -431,6 +648,75 @@ export default function Investments() {
           <DialogFooter>
             <Button variant="outline" onClick={()=>setTxOpen(false)}>Cancel</Button>
             <Button onClick={handleSaveTx}>{editTx ? "Save Changes" : "Add Transaction"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {/* Manual Dividend Deposit Dialog */}
+      <Dialog open={depositOpen} onOpenChange={setDepositOpen}>
+        <DialogContent className="sm:max-w-sm bg-card border-border">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              💸 Deposit Dividend
+            </DialogTitle>
+          </DialogHeader>
+          {depositTx && (() => {
+            const holding = investmentHoldings.find(h => h.id === depositTx.holdingId);
+            return (
+              <div className="space-y-4 py-2">
+                {/* Summary */}
+                <div className="bg-primary/10 rounded-lg px-4 py-3 text-sm">
+                  <p className="text-muted-foreground text-xs mb-1">{holding?.name} · {depositTx.tx.date}</p>
+                  <p className="text-2xl font-bold text-primary">
+                    {holding?.currency} {depositTx.tx.totalAmount.toFixed(2)}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Dividend to deposit</p>
+                </div>
+
+                {/* Account picker */}
+                <div className="space-y-1.5">
+                  <Label>Deposit to Account</Label>
+                  <Select value={depositAccountId} onValueChange={setDepositAccountId}>
+                    <SelectTrigger className="bg-background border-border">
+                      <SelectValue placeholder="Select account…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {accounts.filter(a => a.isActive).map(a => (
+                        <SelectItem key={a.id} value={a.id}>
+                          <span className="flex items-center gap-2">
+                            {a.name}
+                            <span className="text-muted-foreground text-xs">({a.currency})</span>
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Date */}
+                <div className="space-y-1.5">
+                  <Label>Deposit Date</Label>
+                  <Input
+                    type="date"
+                    value={depositDate}
+                    onChange={e => setDepositDate(e.target.value)}
+                    className="bg-background border-border"
+                  />
+                </div>
+
+                {depositAccountId && (
+                  <div className="bg-secondary/40 rounded-lg px-3 py-2 text-xs text-muted-foreground">
+                    This will add <span className="text-foreground font-semibold">+{holding?.currency} {depositTx.tx.totalAmount.toFixed(2)}</span> to{" "}
+                    <span className="text-foreground font-semibold">{accounts.find(a => a.id === depositAccountId)?.name}</span> as Investment Income.
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDepositOpen(false)}>Cancel</Button>
+            <Button onClick={handleDeposit} disabled={!depositAccountId} className="gap-2">
+              💸 Deposit Now
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
