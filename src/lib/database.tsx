@@ -1093,48 +1093,127 @@ export function DatabaseProvider({ children, userId }: { children: ReactNode; us
       const newTxs = txs.map(t => ({ ...t, id: uid() }));
       setTransactions(p => [...newTxs, ...p]);
     },
+// WITH:
 updateTransaction: (id, u) => {
-  setTransactions(p => {
-    const updated = p.map(t => t.id === id ? { ...t, ...u } : t);
-
-    // Sync edits to the card transaction if it's a CC transaction
-    const tx = p.find(t => t.id === id);
-    if (tx?.isCreditCard && tx?.creditCardId) {
-      setCreditCards(cards => cards.map(c => {
-        if (c.id !== tx.creditCardId) return c;
-        const updatedCardTxs = c.transactions.map(t =>
-          t.linkedTransactionId === id
-            ? {
-                ...t,
-                description: u.name ?? t.description,
-                amount: u.amount ?? t.amount,
-                category: u.category ?? t.category,
-                date: u.date ?? t.date,
-              }
-            : t
-        );
-        const newBalance = updatedCardTxs.reduce((s, t) => s + t.amount, 0);
-        return { ...c, transactions: updatedCardTxs, balance: newBalance };
-      }));
-    }
-
-    return updated;
-  });
+  const existing = transactions.find(t => t.id === id);
+  // 1. Update the account transactions array
+  setTransactions(p => p.map(t => t.id === id ? { ...t, ...u } : t));
+  // 2. Sync to linked credit card
+  if (existing?.creditCardId) {
+    setCreditCards(p => p.map(c => {
+      if (c.id !== existing.creditCardId) return c;
+      // 2a. Sync card.transactions (for CC charges linked via isCreditCard)
+      const updatedTxs = c.transactions.map(ct =>
+        ct.id === id
+          ? {
+              ...ct,
+              description: u.name     !== undefined ? u.name     : ct.description,
+              amount:      u.amount   !== undefined ? u.amount   : ct.amount,
+              category:    u.category !== undefined ? u.category : ct.category,
+              date:        u.date     !== undefined ? u.date     : ct.date,
+            }
+          : ct
+      );
+      // 2b. Sync card.repayments (for CC repayment transactions)
+      const updatedRepayments = (c.repayments || []).map(r => {
+        // Match by the account tx id stored on the repayment, or fall back to date match
+        const isMatch = (r as any).accountTxId === id
+          || (existing.category === "Credit Card Payment"
+              && r.date === (u.date ?? existing.date)
+              && r.amount === Math.abs(existing.amount));
+        if (!isMatch) return r;
+        return {
+          ...r,
+          amount: u.amount !== undefined ? Math.abs(u.amount) : r.amount,
+          date:   u.date   !== undefined ? u.date             : r.date,
+          notes:  u.notes  !== undefined ? u.notes            : r.notes,
+        };
+      });
+      return { ...c, transactions: updatedTxs, repayments: updatedRepayments };
+    }));
+  }
 },
 
+
+
+
+
+
+
+
+
+
+
+
+//     // Sync edits to the card transaction if it's a CC transaction
+//     const tx = p.find(t => t.id === id);
+//     if (tx?.isCreditCard && tx?.creditCardId) {
+//       setCreditCards(cards => cards.map(c => {
+//         if (c.id !== tx.creditCardId) return c;
+//         const updatedCardTxs = c.transactions.map(t =>
+//           t.linkedTransactionId === id
+//             ? {
+//                 ...t,
+//                 description: u.name ?? t.description,
+//                 amount: u.amount ?? t.amount,
+//                 category: u.category ?? t.category,
+//                 date: u.date ?? t.date,
+//               }
+//             : t
+//         );
+//         const newBalance = updatedCardTxs.reduce((s, t) => s + t.amount, 0);
+//         return { ...c, transactions: updatedCardTxs, balance: newBalance };
+//       }));
+//     }
+
+//     return updated;
+//   });
+// },
+
+
+
+// database.tsx — deleteTransaction
+// BEFORE:
+// deleteTransaction: id => {
+//   const tx = transactions.find(t => t.id === id);
+//   if (tx) saveToTrashSb({ id: uid(), type: "transaction", label: tx.name, detail: `${tx.date} · ${tx.category} · ${tx.amount}`, deletedAt: new Date().toISOString(), data: tx });
+//   sbDelete("transactions", id);
+//   setTransactionsRaw(p => p.filter(t => t.id !== id));
+
+//   // ← NEW: if this transaction belongs to a CC, remove it from the card too
+//   if (tx?.isCreditCard && tx?.creditCardId) {
+//     setCreditCards(p => p.map(c => {
+//       if (c.id !== tx.creditCardId) return c;
+//       const remaining = c.transactions.filter(t => t.linkedTransactionId !== id);
+//       const newBalance = remaining.reduce((s, t) => s + t.amount, 0);
+//       return { ...c, transactions: remaining, balance: newBalance };
+//     }));
+//   }
+// },
+
+
+// WITH:
 deleteTransaction: id => {
   const tx = transactions.find(t => t.id === id);
   if (tx) saveToTrashSb({ id: uid(), type: "transaction", label: tx.name, detail: `${tx.date} · ${tx.category} · ${tx.amount}`, deletedAt: new Date().toISOString(), data: tx });
   sbDelete("transactions", id);
   setTransactionsRaw(p => p.filter(t => t.id !== id));
-
-  // ← NEW: if this transaction belongs to a CC, remove it from the card too
-  if (tx?.isCreditCard && tx?.creditCardId) {
+  // Sync deletion to linked credit card
+  if (tx?.creditCardId) {
     setCreditCards(p => p.map(c => {
       if (c.id !== tx.creditCardId) return c;
-      const remaining = c.transactions.filter(t => t.linkedTransactionId !== id);
-      const newBalance = remaining.reduce((s, t) => s + t.amount, 0);
-      return { ...c, transactions: remaining, balance: newBalance };
+      return {
+        ...c,
+        transactions: c.transactions.filter(ct => ct.id !== id),
+        repayments: (c.repayments || []).filter(r =>
+          !(
+            (r as any).accountTxId === id
+            || (tx.category === "Credit Card Payment"
+                && r.date === tx.date
+                && r.amount === Math.abs(tx.amount))
+          )
+        ),
+      };
     }));
   }
 },
@@ -1320,15 +1399,26 @@ deleteTransaction: id => {
       const card = creditCards.find(c => c.id === repayment.cardId);
       setCreditCards(p => p.map(c => {
         if (c.id!==repayment.cardId) return c;
-        const newBalance = c.balance + repayment.amount; // repayment reduces debt
-        const newRepayments = [...(c.repayments||[]), { ...repayment, id: newId }];
+        const newBalance = c.balance - repayment.amount; // repayment reduces debt
+        const newRepayments = [...(c.repayments||[]), { ...repayment, id: newId, accountTxId: newId }];
         if (repayment.method === "cashback") {
           return { ...c, balance: newBalance, repayments: newRepayments, cashbackBalance: Math.max(0, (c.cashbackBalance||0) - repayment.amount) };
         }
         return { ...c, balance: newBalance, repayments: newRepayments };
       }));
-      if (repayment.sourceAccountId) {
-        setTransactions(prev => [{ id: uid(), name: `CC Repayment - ${card?.name||"Card"}`, amount: -repayment.amount, type: "expense" as const, category: "Credit Card Payment", accountId: repayment.sourceAccountId!, date: repayment.date, notes: repayment.notes }, ...prev]);
+// In addCardRepayment, the account transaction creation:
+if (repayment.sourceAccountId) {
+  setTransactions(prev => [{
+    id: newId,           // ← use newId (same as repayment.id) so the link is exact
+    name: `CC Repayment - ${card?.name||"Card"}`,
+    amount: -repayment.amount,
+    type: "expense" as const,
+    category: "Credit Card Payment",
+    accountId: repayment.sourceAccountId!,
+    date: repayment.date,
+    notes: repayment.notes,
+    creditCardId: repayment.cardId,   // ← store the link back to the card
+  }, ...prev]);
       }
     },
 
